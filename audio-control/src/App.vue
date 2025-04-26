@@ -1,8 +1,8 @@
 <template>
-  <div class="p-4 max-w-4xl mx-auto">
-    <h1 class="text-2xl mb-4">Audio Control Panel</h1>
+  <div class="container">
+    <h1>Audio Control Panel</h1>
 
-    <div class="mb-4">
+    <div class="control-form">
       <label>
         Delay Left:
         <input
@@ -10,7 +10,6 @@
             min="0"
             max="50"
             v-model.number="delayL"
-            class="ml-2 border p-1"
         />
       </label>
       <br />
@@ -21,40 +20,47 @@
             min="0"
             max="50"
             v-model.number="delayR"
-            class="ml-2 border p-1"
         />
       </label>
       <br />
-      <button @click="toggleProcessing" class="mt-2 p-2 bg-blue-500 text-white">
-        {{ running ? 'Stop' : 'Start' }}
-      </button>
-      <button @click="updateParams" class="mt-2 ml-2 p-2 bg-green-500 text-white">
-        Update
-      </button>
-    </div>
-
-    <div class="mb-4">
-      <label>
-        <input type="radio" v-model="showInput" :value="true" /> Input
-      </label>
-      <label class="ml-4">
-        <input type="radio" v-model="showInput" :value="false" /> Output
-      </label>
-      <div class="h-48">
-        <Chart type="line" :data="chartData" :options="chartOptions" />
+      <div class="button-group">
+        <button @click="toggleProcessing" class="start-stop">
+          {{ running ? 'Stop' : 'Start' }}
+        </button>
+        <button @click="updateParams" class="update">
+          Update
+        </button>
       </div>
     </div>
 
-    <div class="mb-4">
-      <h2 class="text-xl mb-2">Waveform Data</h2>
-      <p><strong>Input:</strong> {{ waveformData.input.slice(0, 10) }}...</p>
-      <p><strong>Output:</strong> {{ waveformData.output.slice(0, 10) }}...</p>
+    <div class="chart-container">
+      <div class="chart-box">
+        <h2>Input</h2>
+        <Chart type="line" :data="inputChartData" :options="chartOptions" class="chart" />
+      </div>
+      <div class="chart-box">
+        <h2>Output</h2>
+        <Chart type="line" :data="outputChartData" :options="chartOptions" class="chart" />
+      </div>
+    </div>
+
+    <div class="logs-container">
+      <div class="logs-box">
+        <h2>Raspberry Pi Stats</h2>
+        <ul>
+          <li>Input Max Amplitude: {{ logs.input_max_amplitude }}</li>
+          <li>Output Max Amplitude: {{ logs.output_max_amplitude }}</li>
+          <li>Temperature: {{ logs.temperature }}</li>
+          <li>CPU Load: {{ logs.cpu_load }}%</li>
+          <li>Wi-Fi SSID: {{ logs.wifi_ssid }}</li>
+          <li>Wi-Fi Signal: {{ logs.wifi_signal }} dBm</li>
+        </ul>
+      </div>
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
 import { Chart } from 'vue-chartjs';
 import {
   Chart as ChartJS,
@@ -64,19 +70,89 @@ import {
   Title,
   CategoryScale,
 } from 'chart.js';
+import { useStore } from 'vuex';
+import { computed, onMounted, onUnmounted, watch } from 'vue';
+import axios from 'axios';
+import { useToast } from '@brackets/vue-toastification';
 
 // Înregistrăm componentele Chart.js
 ChartJS.register(LineElement, PointElement, LinearScale, Title, CategoryScale);
 
-// Starea aplicației
-const running = ref(false);
-const delayL = ref(10);
-const delayR = ref(12);
-const waveformData = ref({ input: [], output: [] });
-const showInput = ref(true);
-let pollingInterval = null;
+// Vuex store
+const store = useStore();
+const running = computed(() => store.state.running);
+const delayL = computed({
+  get: () => store.state.delayL,
+  set: (value) => store.commit('setDelayL', value)
+});
+const delayR = computed({
+  get: () => store.state.delayR,
+  set: (value) => store.commit('setDelayR', value)
+});
+const waveformData = computed(() => store.state.waveformData);
+const logs = computed(() => store.state.logs);
 
-// Funcție pentru polling date waveform cu retry
+// Toast
+const toast = useToast();
+
+// Numărul maxim de puncte de afișat în grafic
+const MAX_POINTS = 400;
+
+// Funcție pentru subeșantionare
+const downsample = (data, maxPoints) => {
+  if (data.length <= maxPoints) return data;
+  const step = Math.floor(data.length / maxPoints);
+  const downsampled = [];
+  for (let i = 0; i < data.length; i += step) {
+    downsampled.push(data[i]);
+    if (downsampled.length >= maxPoints) break;
+  }
+  return downsampled;
+};
+
+// Configurare grafice
+const inputChartData = computed(() => {
+  const downsampledData = downsample(waveformData.value.input, MAX_POINTS);
+  return {
+    labels: Array(downsampledData.length).fill(''),
+    datasets: [
+      {
+        label: 'Input',
+        data: downsampledData,
+        borderColor: 'blue',
+        fill: false,
+        pointRadius: 0,
+      },
+    ],
+  };
+});
+
+const outputChartData = computed(() => {
+  const downsampledData = downsample(waveformData.value.output, MAX_POINTS);
+  return {
+    labels: Array(downsampledData.length).fill(''),
+    datasets: [
+      {
+        label: 'Output',
+        data: downsampledData,
+        borderColor: 'green',
+        fill: false,
+        pointRadius: 0,
+      },
+    ],
+  };
+});
+
+const chartOptions = {
+  animation: false,
+  maintainAspectRatio: false,
+  scales: {
+    x: { display: false },
+    y: { min: -32768, max: 32767 },
+  },
+};
+
+// Funcții pentru cereri HTTP
 const fetchWaveformData = async () => {
   const maxRetries = 3;
   let retries = 0;
@@ -84,28 +160,20 @@ const fetchWaveformData = async () => {
   while (retries < maxRetries) {
     try {
       const [inputRes, outputRes] = await Promise.all([
-        fetch('http://192.168.3.28:5500/data_input', { method: 'GET' }),
-        fetch('http://192.168.3.28:5500/data_output', { method: 'GET' }),
+        axios.get('http://192.168.3.28:5500/data_input'),
+        axios.get('http://192.168.3.28:5500/data_output'),
       ]);
-
-      if (!inputRes.ok) throw new Error(`Eroare input: ${inputRes.status}`);
-      if (!outputRes.ok) throw new Error(`Eroare output: ${outputRes.status}`);
-
-      const inputData = await inputRes.json();
-      const outputData = await outputRes.json();
-
-      waveformData.value = {
-        input: inputData.input || [],
-        output: outputData.output || [],
-      };
-
-      console.log('Waveform primit:', waveformData.value);
+      store.commit('setWaveformData', {
+        input: inputRes.data.input || [],
+        output: outputRes.data.output || [],
+      });
       return;
     } catch (error) {
       retries++;
-      console.error(`Eroare la polling (încercarea ${retries}/${maxRetries}):`, error);
+      console.error(`Eroare la polling waveform (încercarea ${retries}/${maxRetries}):`, error);
       if (retries === maxRetries) {
         console.error('Maxim de încercări atins. Polling oprit temporar.');
+        toast.error('Eroare la obținerea datelor waveform');
         return;
       }
       await new Promise(resolve => setTimeout(resolve, 1000));
@@ -113,18 +181,56 @@ const fetchWaveformData = async () => {
   }
 };
 
+const fetchLogs = async () => {
+  const maxRetries = 3;
+  let retries = 0;
+
+  while (retries < maxRetries) {
+    try {
+      const res = await axios.get('http://192.168.3.28:5500/logs');
+      store.commit('setLogs', res.data);
+      return;
+    } catch (error) {
+      retries++;
+      console.error(`Eroare la obținerea logurilor (încercarea ${retries}/${maxRetries}):`, error);
+      if (retries === maxRetries) {
+        console.error('Maxim de încercări atins pentru loguri.');
+        toast.error('Eroare la obținerea logurilor');
+        return;
+      }
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+  }
+};
+
+
 // Controlează polling-ul în funcție de running
+let waveformInterval = null;
+let logsInterval = null;
+let shairportInterval = null;
+
 const startPolling = () => {
-  if (pollingInterval) clearInterval(pollingInterval);
-  pollingInterval = setInterval(fetchWaveformData, 100); // Reducem frecvența la 100ms
+  if (waveformInterval) clearInterval(waveformInterval);
+  if (logsInterval) clearInterval(logsInterval);
+  if (shairportInterval) clearInterval(shairportInterval);
+  waveformInterval = setInterval(fetchWaveformData, 100);
+  logsInterval = setInterval(fetchLogs, 1000);
 };
 
 const stopPolling = () => {
-  if (pollingInterval) {
-    clearInterval(pollingInterval);
-    pollingInterval = null;
+  if (waveformInterval) {
+    clearInterval(waveformInterval);
+    waveformInterval = null;
   }
-  waveformData.value = { input: [], output: [] }; // Resetăm datele
+  if (logsInterval) {
+    clearInterval(logsInterval);
+    logsInterval = null;
+  }
+  if (shairportInterval) {
+    clearInterval(shairportInterval);
+    shairportInterval = null;
+  }
+  store.commit('setWaveformData', { input: [], output: [] });
 };
 
 // Monitorizăm starea running
@@ -149,58 +255,23 @@ onUnmounted(() => {
 // Funcții pentru cereri HTTP
 const toggleProcessing = async () => {
   try {
-    console.log('Trimit cerere /toggle...');
-    const res = await fetch('http://192.168.3.28:5500/toggle', { method: 'POST' });
-    if (!res.ok) throw new Error(`Răspuns invalid: ${res.status}`);
-    const data = await res.json();
-    running.value = data.running;
-    console.log('Toggle response:', data);
+    const res = await axios.post('http://192.168.3.28:5500/toggle');
+    store.commit('setRunning', res.data.running);
+    toast.success(res.data.running ? 'Procesare pornită' : 'Procesare oprită');
   } catch (error) {
     console.error('Eroare la toggle:', error);
+    toast.error('Eroare la toggle procesare');
   }
 };
 
 const updateParams = async () => {
-  const params = { delay_l: delayL.value, delay_r: delayR.value };
+  const params = {delay_l: delayL.value, delay_r: delayR.value};
   try {
-    console.log('Trimit cerere /update...');
-    const res = await fetch('http://192.168.3.28:5500/update', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(params),
-    });
-    if (!res.ok) throw new Error(`Răspuns invalid: ${res.status}`);
-    const data = await res.json();
-    console.log('Update response:', data);
+    await axios.post('http://192.168.3.28:5500/update', params);
+    toast.success('Parametrii au fost actualizați');
   } catch (error) {
     console.error('Eroare la update:', error);
+    toast.error('Eroare la actualizarea parametrilor');
   }
 };
-
-// Configurare grafic
-const chartData = computed(() => ({
-  labels: Array(waveformData.value[showInput.value ? 'input' : 'output'].length).fill(''),
-  datasets: [
-    {
-      label: showInput.value ? 'Input' : 'Output',
-      data: waveformData.value[showInput.value ? 'input' : 'output'],
-      borderColor: 'blue',
-      fill: false,
-      pointRadius: 0,
-    },
-  ],
-}));
-
-const chartOptions = {
-  animation: false,
-  maintainAspectRatio: false,
-  scales: {
-    x: { display: false },
-    y: { min: -32768, max: 32767 },
-  },
-};
 </script>
-
-<style scoped>
-/* Stiluri opționale */
-</style>

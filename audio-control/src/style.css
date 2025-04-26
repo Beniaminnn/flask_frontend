@@ -1,0 +1,136 @@
+/* Reset și stiluri generale */
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: 'Inter', sans-serif;
+    background-color: #f5f5f5;
+    color: #333;
+}
+
+/* Container principal */
+.container {
+    padding: 1rem;
+    max-width: 1024px;
+    margin: 0 auto;
+}
+
+/* Titlu */
+h1 {
+    font-size: 1.5rem;
+    font-weight: 600;
+    margin-bottom: 1rem;
+}
+
+/* Formular de control */
+.control-form {
+    margin-bottom: 1rem;
+}
+
+.control-form label {
+    display: block;
+    margin-bottom: 0.5rem;
+}
+
+.control-form input {
+    margin-left: 0.5rem;
+    padding: 0.25rem;
+    border: 1px solid #d1d5db;
+    border-radius: 0.25rem;
+    width: 100px;
+}
+
+.button-group {
+    margin-top: 0.5rem;
+    display: flex;
+    gap: 0.5rem;
+}
+
+button.start-stop {
+    padding: 0.5rem 1rem;
+    background-color: #3b82f6;
+    color: #fff;
+    border-radius: 0.25rem;
+    cursor: pointer;
+    transition: background-color 0.2s;
+}
+
+button.start-stop:hover {
+    background-color: #2563eb;
+}
+
+button.update {
+    padding: 0.5rem 1rem;
+    background-color: #10b981;
+    color: #fff;
+    border-radius: 0.25rem;
+    cursor: pointer;
+    transition: background-color 0.2s;
+}
+
+button.update:hover {
+    background-color: #059669;
+}
+
+/* Grafice */
+.chart-container {
+    display: flex;
+    gap: 1rem;
+    margin-bottom: 1rem;
+}
+
+.chart-box {
+    flex: 1;
+    height: 192px;
+    border: 1px solid #e5e7eb;
+    border-radius: 0.5rem;
+    padding: 0.5rem;
+    background-color: #fff;
+}
+
+.chart-box h2 {
+    text-align: center;
+    font-size: 1.125rem;
+    font-weight: 500;
+    margin-bottom: 0.5rem;
+}
+
+.chart {
+    height: 100% !important;
+    width: 100% !important;
+}
+
+/* Container loguri */
+.logs-container {
+    display: flex;
+    gap: 1rem;
+    margin-bottom: 1rem;
+}
+
+.logs-box {
+    flex: 1;
+    background-color: #f3f4f6;
+    padding: 1rem;
+    border-radius: 0.5rem;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+
+.logs-box h2 {
+    font-size: 1.125rem;
+    font-weight: 500;
+    margin-bottom: 0.5rem;
+    text-align: center;
+}
+
+.logs-box ul {
+    list-style-type: disc;
+    padding-left: 1.25rem;
+    font-size: 0.875rem;
+}
+
+.logs-box li {
+    margin-bottom: 0.25rem;
+}
