@@ -15,6 +15,12 @@ export const store = createStore({
                 wifi_ssid: 'N/A',
                 wifi_signal: 'N/A'
             },
+            sensors: {
+                Dreapta: 'Eroare',
+                Stânga: 'Eroare',
+                Față: 'Eroare',
+                Spate: 'Eroare'
+            }
         };
     },
     mutations: {
@@ -33,5 +39,8 @@ export const store = createStore({
         setLogs(state, logs) {
             state.logs = logs;
         },
+        setSensors(state, sensors) {
+            state.sensors = sensors;
+        }
     }
 });
