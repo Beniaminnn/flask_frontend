@@ -60,7 +60,7 @@
             <div class="sensor-marker" id="sensor-spate" :data-distance="sensors.Spate + ' cm'" style="bottom: 0; left: 50%; transform: translateX(-50%);"></div>
             <div class="sensor-marker" id="sensor-stanga" :data-distance="sensors.Stânga + ' cm'" style="top: 50%; left: 0; transform: translateY(-50%);"></div>
             <div class="sensor-marker" id="sensor-dreapta" :data-distance="sensors.Dreapta + ' cm'" style="top: 50%; right: 0; transform: translateY(-50%);"></div>
-            <!-- Speaker marker with dynamic position from sensors -->
+            <!-- Speaker marker -->
             <div
                 class="speaker-marker"
                 id="speaker"
@@ -92,9 +92,10 @@ import {
   CategoryScale,
 } from 'chart.js';
 import { useStore } from 'vuex';
-import { computed, onMounted, onUnmounted, watch, ref } from 'vue';
+import { computed, onMounted, onUnmounted, ref } from 'vue';
 import axios from 'axios';
 import { useToast } from '@brackets/vue-toastification';
+import { io } from 'socket.io-client';
 
 // Înregistrăm componentele Chart.js
 ChartJS.register(LineElement, PointElement, LinearScale, Title, CategoryScale);
@@ -108,12 +109,13 @@ const waveformData = computed(() => store.state.waveformData);
 const logs = computed(() => store.state.logs);
 const sensors = computed(() => store.state.sensors);
 
-// Date despre persoane
+// Date despre persoane și boxă
 const peopleCount = ref(0);
 const peoplePositions = ref([]);
+const speakerPos = ref({ x: 200, y: 200 });
 
-// Poziția boxei calculată de senzori
-const speakerPos = ref({ x: 200, y: 200 });  // Inițial în centru, se va actualiza
+// Date pentru anomalii
+const anomalyIndices = ref([]);
 
 // Toast
 const toast = useToast();
@@ -131,6 +133,20 @@ const downsample = (data, maxPoints) => {
     if (downsampled.length >= maxPoints) break;
   }
   return downsampled;
+};
+
+// Subeșantionează indicii anomaliilor
+const downsampleAnomalies = (indices, dataLength, maxPoints) => {
+  if (dataLength <= maxPoints) return indices;
+  const step = Math.floor(dataLength / maxPoints);
+  const downsampledIndices = [];
+  indices.forEach(idx => {
+    const downsampledIdx = Math.floor(idx / step);
+    if (downsampledIdx < maxPoints && !downsampledIndices.includes(downsampledIdx)) {
+      downsampledIndices.push(downsampledIdx);
+    }
+  });
+  return downsampledIndices;
 };
 
 // Calculează amplitudinea maximă cu o marjă
@@ -165,6 +181,7 @@ const inputChartData = computed(() => {
 
 const outputChartData = computed(() => {
   const downsampledData = downsample(waveformData.value.output, MAX_POINTS);
+  const downsampledAnomalies = downsampleAnomalies(waveformData.value.anomalies || [], waveformData.value.output.length, MAX_POINTS);
   return {
     labels: Array(downsampledData.length).fill(''),
     datasets: [
@@ -174,6 +191,16 @@ const outputChartData = computed(() => {
         borderColor: 'green',
         fill: false,
         pointRadius: 0,
+      },
+      {
+        label: 'Anomalies',
+        data: downsampledAnomalies.map(idx => ({ x: idx, y: getDynamicRange(downsampledData).max * 0.9 })),
+        borderColor: 'red',
+        backgroundColor: 'rgba(255, 0, 0, 0.3)',
+        pointRadius: 2,
+        pointHoverRadius: 5,
+        fill: false,
+        showLine: false,
       },
     ],
   };
@@ -207,13 +234,25 @@ const outputChartOptions = computed(() => {
         max: range.max,
       },
     },
+    plugins: {
+      tooltip: {
+        callbacks: {
+          label: (context) => {
+            if (context.dataset.label === 'Anomalies') {
+              return 'Anomaly detected';
+            }
+            return `${context.dataset.label}: ${context.parsed.y}`;
+          },
+        },
+      },
+    },
   };
 });
 
 // Calculează poziția persoanelor pe hartă
 const getPersonPositionStyle = (person) => {
-  const mapSize = 200; // Dimensiunea hărții (px)
-  const roomSize = 400; // Dimensiunea camerei (cm)
+  const mapSize = 200;
+  const roomSize = 400;
 
   const xPixel = (person.x / roomSize) * mapSize;
   const yPixel = (person.y / roomSize) * mapSize;
@@ -227,8 +266,8 @@ const getPersonPositionStyle = (person) => {
 
 // Calculează poziția boxei pe hartă
 const getSpeakerPositionStyle = (pos) => {
-  const mapSize = 200; // Dimensiunea hărții (px)
-  const roomSize = 400; // Dimensiunea camerei (cm)
+  const mapSize = 200;
+  const roomSize = 400;
 
   const xPixel = (pos.x / roomSize) * mapSize;
   const yPixel = (pos.y / roomSize) * mapSize;
@@ -240,221 +279,59 @@ const getSpeakerPositionStyle = (pos) => {
   };
 };
 
-// Funcții pentru cereri HTTP
-const fetchWaveformData = async () => {
-  const maxRetries = 3;
-  let retries = 0;
+// Configurare WebSocket
+const socket = io('http://raspberrypi.local:5500');
 
-  while (retries < maxRetries) {
-    try {
-      const [inputRes, outputRes] = await Promise.all([
-        axios.get('http://raspberrypi.local:5500/data_input'),
-        axios.get('http://raspberrypi.local:5500/data_output'),
-      ]);
-      store.commit('setWaveformData', {
-        input: inputRes.data.input || [],
-        output: outputRes.data.output || [],
-      });
-      return;
-    } catch (error) {
-      retries++;
-      console.error(`Eroare la polling waveform (încercarea ${retries}/${maxRetries}):`, error);
-      if (retries === maxRetries) {
-        console.error('Maxim de încercări atins. Polling oprit temporar.');
-        toast.error('Eroare la obținerea datelor waveform');
-        return;
-      }
-      await new Promise(resolve => setTimeout(resolve, 1000));
-    }
-  }
-};
-
-const fetchLogs = async () => {
-  const maxRetries = 3;
-  let retries = 0;
-
-  while (retries < maxRetries) {
-    try {
-      const res = await axios.get('http://raspberrypi.local:5500/logs');
-      store.commit('setLogs', res.data);
-      return;
-    } catch (error) {
-      retries++;
-      console.error(`Eroare la obținerea logurilor (încercarea ${retries}/${maxRetries}):`, error);
-      if (retries === maxRetries) {
-        console.error('Maxim de încercări atins pentru loguri.');
-        toast.error('Eroare la obținerea logurilor');
-        return;
-      }
-      await new Promise(resolve => setTimeout(resolve, 1000));
-    }
-  }
-};
-
-const fetchSensors = async () => {
-  const maxRetries = 3;
-  let retries = 0;
-
-  while (retries < maxRetries) {
-    try {
-      const res = await axios.get('http://raspberrypi.local:5500/sensors');
-      store.commit('setSensors', res.data);
-      return;
-    } catch (error) {
-      retries++;
-      console.error(`Eroare la obținerea datelor senzorilor (încercarea ${retries}/${maxRetries}):`, error);
-      if (retries === maxRetries) {
-        console.error('Maxim de încercări atins pentru senzori.');
-        toast.error('Eroare la obținerea datelor senzorilor');
-        return;
-      }
-      await new Promise(resolve => setTimeout(resolve, 1000));
-    }
-  }
-};
-
-const fetchPeople = async () => {
-  const maxRetries = 3;
-  let retries = 0;
-
-  while (retries < maxRetries) {
-    try {
-      const res = await axios.get('http://raspberrypi.local:5500/people');
-      peopleCount.value = res.data.count;
-      peoplePositions.value = res.data.positions;
-      return;
-    } catch (error) {
-      retries++;
-      console.error(`Eroare la obținerea datelor despre persoane (încercarea ${retries}/${maxRetries}):`, error);
-      if (retries === maxRetries) {
-        console.error('Maxim de încercări atins pentru persoane.');
-        toast.error('Eroare la obținerea datelor despre persoane');
-        return;
-      }
-      await new Promise(resolve => setTimeout(resolve, 1000));
-    }
-  }
-};
-
-const fetchParams = async () => {
-  const maxRetries = 3;
-  let retries = 0;
-
-  while (retries < maxRetries) {
-    try {
-      const res = await axios.get('http://raspberrypi.local:5500/params');
-      store.commit('setDelayL', res.data.delay_l);
-      store.commit('setDelayR', res.data.delay_r);
-      return;
-    } catch (error) {
-      retries++;
-      console.error(`Eroare la obținerea parametrilor (încercarea ${retries}/${maxRetries}):`, error);
-      if (retries === maxRetries) {
-        console.error('Maxim de încercări atins pentru parametri.');
-        toast.error('Eroare la obținerea parametrilor');
-        return;
-      }
-      await new Promise(resolve => setTimeout(resolve, 1000));
-    }
-  }
-};
-
-const fetchSpeakerPosition = async () => {
-  const maxRetries = 3;
-  let retries = 0;
-
-  while (retries < maxRetries) {
-    try {
-      const res = await axios.get('http://raspberrypi.local:5500/get_speaker_position');
-      speakerPos.value = { x: res.data.x, y: res.data.y };
-      return;
-    } catch (error) {
-      retries++;
-      console.error(`Eroare la obținerea poziției boxei (încercarea ${retries}/${maxRetries}):`, error);
-      if (retries === maxRetries) {
-        console.error('Maxim de încercări atins pentru poziția boxei.');
-        toast.error('Eroare la obținerea poziției boxei');
-        return;
-      }
-      await new Promise(resolve => setTimeout(resolve, 1000));
-    }
-  }
-};
-
-// Controlează polling-ul
-let waveformInterval = null;
-let logsInterval = null;
-let sensorsInterval = null;
-let peopleInterval = null;
-let paramsInterval = null;
-let speakerPositionInterval = null;
-
-const startPolling = () => {
-  if (waveformInterval) clearInterval(waveformInterval);
-  if (logsInterval) clearInterval(logsInterval);
-  if (sensorsInterval) clearInterval(sensorsInterval);
-  if (peopleInterval) clearInterval(peopleInterval);
-  if (paramsInterval) clearInterval(paramsInterval);
-  if (speakerPositionInterval) clearInterval(speakerPositionInterval);
-  waveformInterval = setInterval(fetchWaveformData, 40);
-  logsInterval = setInterval(fetchLogs, 500);
-  sensorsInterval = setInterval(fetchSensors, 2000);
-  peopleInterval = setInterval(fetchPeople, 2000);
-  paramsInterval = setInterval(fetchParams, 1000);
-  speakerPositionInterval = setInterval(fetchSpeakerPosition, 2000); // Actualizare la fiecare 2 secunde
-};
-
-const stopPolling = () => {
-  if (waveformInterval) {
-    clearInterval(waveformInterval);
-    waveformInterval = null;
-  }
-  if (logsInterval) {
-    clearInterval(logsInterval);
-    logsInterval = null;
-  }
-  if (sensorsInterval) {
-    clearInterval(sensorsInterval);
-    sensorsInterval = null;
-  }
-  if (peopleInterval) {
-    clearInterval(peopleInterval);
-    peopleInterval = null;
-  }
-  if (paramsInterval) {
-    clearInterval(paramsInterval);
-    paramsInterval = null;
-  }
-  if (speakerPositionInterval) {
-    clearInterval(speakerPositionInterval);
-    speakerPositionInterval = null;
-  }
-  store.commit('setWaveformData', { input: [], output: [] });
-  store.commit('setSensors', { Dreapta: 'Eroare', Stânga: 'Eroare', Față: 'Eroare', Spate: 'Eroare' });
-  peopleCount.value = 0;
-  peoplePositions.value = [];
-};
-
-// Monitorizăm starea running
-watch(running, (newValue) => {
-  if (newValue) {
-    startPolling();
-  } else {
-    stopPolling();
-  }
-});
-
-// Începe polling-ul la montare dacă running este true
 onMounted(() => {
-  if (running.value) startPolling();
+  socket.on('connect', () => {
+    console.log('Conectat la server WebSocket');
+  });
+
+  socket.on('data_input', (data) => {
+    store.commit('setWaveformData', { input: data.input || [], output: waveformData.value.output, anomalies: waveformData.value.anomalies });
+  });
+
+  socket.on('data_output', (data) => {
+    store.commit('setWaveformData', { input: waveformData.value.input, output: data.output || [], anomalies: data.anomalies || [] });
+  });
+
+  socket.on('sensors', (data) => {
+    store.commit('setSensors', data);
+  });
+
+  socket.on('people', (data) => {
+    peopleCount.value = data.count;
+    peoplePositions.value = data.positions;
+  });
+
+  socket.on('params', (data) => {
+    store.commit('setDelayL', data.delay_l);
+    store.commit('setDelayR', data.delay_r);
+    store.commit('setRunning', data.running);
+  });
+
+  socket.on('speaker_position', (data) => {
+    speakerPos.value = { x: data.x, y: data.y };
+  });
+
+  socket.on('logs', (data) => {
+    store.commit('setLogs', data);
+  });
+
+  socket.on('disconnect', () => {
+    console.log('Deconectat de la server WebSocket');
+    store.commit('setWaveformData', { input: [], output: [], anomalies: [] });
+    store.commit('setSensors', { Dreapta: 'Eroare', Stânga: 'Eroare', Față: 'Eroare', Spate: 'Eroare' });
+    peopleCount.value = 0;
+    peoplePositions.value = [];
+  });
 });
 
-// Oprește polling-ul la demontare
 onUnmounted(() => {
-  stopPolling();
+  socket.disconnect();
 });
 
-// Funcții pentru cereri HTTP
+// Funcție pentru toggle procesare
 const toggleProcessing = async () => {
   try {
     const res = await axios.post('http://raspberrypi.local:5500/toggle');
@@ -482,8 +359,7 @@ const toggleProcessing = async () => {
   margin-top: 10px;
 }
 
-.start-stop,
-.update {
+.start-stop {
   padding: 10px 20px;
   margin-right: 10px;
 }
@@ -520,7 +396,6 @@ const toggleProcessing = async () => {
   margin-bottom: 10px;
 }
 
-/* Stiluri pentru secțiunea de senzori */
 .sensors-section {
   position: relative;
 }
@@ -587,7 +462,6 @@ const toggleProcessing = async () => {
   border-radius: 50%;
 }
 
-/* Responsive adjustments */
 @media (max-width: 768px) {
   .logs-box {
     width: 100%;
