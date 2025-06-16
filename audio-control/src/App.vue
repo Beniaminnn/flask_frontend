@@ -1,6 +1,6 @@
 <template>
   <div class="container">
-    <h1>Audio and Sensor Control Panel</h1>
+    <h1 class="title">Audio and Sensor Control Panel</h1>
 
     <div class="control-form">
       <label>
@@ -23,19 +23,19 @@
 
     <div class="chart-container">
       <div class="chart-box">
-        <h2>Input</h2>
+        <h2 class="chart-title">Input</h2>
         <Chart type="line" :data="inputChartData" :options="inputChartOptions" class="chart" />
       </div>
       <div class="chart-box">
-        <h2>Output</h2>
+        <h2 class="chart-title">Output</h2>
         <Chart type="line" :data="outputChartData" :options="outputChartOptions" class="chart" />
       </div>
     </div>
 
     <div class="logs-container">
       <div class="logs-box">
-        <h2>Raspberry Pi Stats</h2>
-        <ul>
+        <h2 class="section-title">Raspberry Pi Stats</h2>
+        <ul class="stats-list">
           <li>Input Max Amplitude: {{ logs.input_max_amplitude }}</li>
           <li>Output Max Amplitude: {{ logs.output_max_amplitude }}</li>
           <li>Temperature: {{ logs.temperature }}</li>
@@ -45,9 +45,9 @@
         </ul>
       </div>
       <div class="logs-box sensors-section">
-        <h2>Sensor Distances</h2>
+        <h2 class="section-title">Sensor Distances</h2>
         <div class="sensors-content">
-          <ul>
+          <ul class="sensors-list">
             <li>Dreapta: {{ sensors.Dreapta }} cm</li>
             <li>Stânga: {{ sensors.Stânga }} cm</li>
             <li>Față: {{ sensors.Față }} cm</li>
@@ -55,26 +55,43 @@
             <li>Persoane detectate: {{ peopleCount }}</li>
           </ul>
           <div class="room-map">
-            <!-- Sensor markers -->
             <div class="sensor-marker" id="sensor-fata" :data-distance="sensors.Față + ' cm'" style="top: 0; left: 50%; transform: translateX(-50%);"></div>
             <div class="sensor-marker" id="sensor-spate" :data-distance="sensors.Spate + ' cm'" style="bottom: 0; left: 50%; transform: translateX(-50%);"></div>
             <div class="sensor-marker" id="sensor-stanga" :data-distance="sensors.Stânga + ' cm'" style="top: 50%; left: 0; transform: translateY(-50%);"></div>
             <div class="sensor-marker" id="sensor-dreapta" :data-distance="sensors.Dreapta + ' cm'" style="top: 50%; right: 0; transform: translateY(-50%);"></div>
-            <!-- Speaker marker -->
-            <div
-                class="speaker-marker"
-                id="speaker"
-                :style="getSpeakerPositionStyle(speakerPos)"
-            ></div>
+            <div class="speaker-marker" id="speaker" :style="getSpeakerPositionStyle(speakerPos)"></div>
             <div class="speaker-center-marker" style="left: 50%; top: 50%; transform: translate(-50%, -50%);"></div>
-            <!-- People markers -->
-            <div
-                v-for="(person, index) in peoplePositions"
-                :key="index"
-                class="person-marker"
-                :style="getPersonPositionStyle(person)"
-            ></div>
+            <div v-for="(person, index) in peoplePositions" :key="index" class="person-marker" :style="getPersonPositionStyle(person)"></div>
           </div>
+        </div>
+      </div>
+      <div class="logs-box logs-section">
+        <h2 class="section-title">System Logs</h2>
+        <div class="tabs">
+          <button @click="activeTab = 'general'" :class="{ active: activeTab === 'general' }">General</button>
+          <button @click="activeTab = 'sensors'" :class="{ active: activeTab === 'sensors' }">Sensors</button>
+          <button @click="activeTab = 'people'" :class="{ active: activeTab === 'people' }">People</button>
+          <button @click="activeTab = 'audio'" :class="{ active: activeTab === 'audio' }">Audio</button>
+        </div>
+        <div class="log-content" v-if="activeTab === 'general'">
+          <ul class="log-list">
+            <li v-for="log in logsGeneral" :key="log" class="log-item">{{ log }}</li>
+          </ul>
+        </div>
+        <div class="log-content" v-if="activeTab === 'sensors'">
+          <ul class="log-list">
+            <li v-for="log in logsSensors" :key="log" class="log-item">{{ log }}</li>
+          </ul>
+        </div>
+        <div class="log-content" v-if="activeTab === 'people'">
+          <ul class="log-list">
+            <li v-for="log in logsPeople" :key="log" class="log-item">{{ log }}</li>
+          </ul>
+        </div>
+        <div class="log-content" v-if="activeTab === 'audio'">
+          <ul class="log-list">
+            <li v-for="log in logsAudio" :key="log" class="log-item">{{ log }}</li>
+          </ul>
         </div>
       </div>
     </div>
@@ -114,6 +131,13 @@ const peopleCount = ref(0);
 const peoplePositions = ref([]);
 const speakerPos = ref({ x: 200, y: 200 });
 
+// Loguri (mărite la 200 de intrări, ordonate descrescător)
+const logsGeneral = ref([]);
+const logsSensors = ref([]);
+const logsPeople = ref([]);
+const logsAudio = ref([]);
+const activeTab = ref('general');
+
 // Date pentru anomalii
 const anomalyIndices = ref([]);
 
@@ -127,139 +151,93 @@ const MAX_POINTS = 400;
 const downsample = (data, maxPoints) => {
   if (data.length <= maxPoints) return data;
   const step = Math.floor(data.length / maxPoints);
-  const downsampled = [];
-  for (let i = 0; i < data.length; i += step) {
-    downsampled.push(data[i]);
-    if (downsampled.length >= maxPoints) break;
-  }
-  return downsampled;
+  return data.filter((_, i) => i % step === 0).slice(0, maxPoints);
 };
 
 // Subeșantionează indicii anomaliilor
 const downsampleAnomalies = (indices, dataLength, maxPoints) => {
   if (dataLength <= maxPoints) return indices;
   const step = Math.floor(dataLength / maxPoints);
-  const downsampledIndices = [];
-  indices.forEach(idx => {
-    const downsampledIdx = Math.floor(idx / step);
-    if (downsampledIdx < maxPoints && !downsampledIndices.includes(downsampledIdx)) {
-      downsampledIndices.push(downsampledIdx);
-    }
-  });
-  return downsampledIndices;
+  return indices.map(idx => Math.floor(idx / step)).filter(idx => idx < maxPoints);
 };
 
 // Calculează amplitudinea maximă cu o marjă
 const getDynamicRange = (data) => {
-  if (!data || data.length === 0) {
-    return { min: -35000, max: 35000 };
-  }
+  if (!data || data.length === 0) return { min: -35000, max: 35000 };
   const maxAmplitude = Math.max(...data.map(Math.abs));
   const margin = maxAmplitude * 0.1;
-  return {
-    min: -maxAmplitude - margin,
-    max: maxAmplitude + margin,
-  };
+  return { min: -maxAmplitude - margin, max: maxAmplitude + margin };
 };
 
 // Configurare grafice
-const inputChartData = computed(() => {
-  const downsampledData = downsample(waveformData.value.input, MAX_POINTS);
-  return {
-    labels: Array(downsampledData.length).fill(''),
-    datasets: [
-      {
-        label: 'Input',
-        data: downsampledData,
-        borderColor: 'blue',
-        fill: false,
-        pointRadius: 0,
-      },
-    ],
-  };
-});
+const inputChartData = computed(() => ({
+  labels: Array(downsample(waveformData.value.input, MAX_POINTS).length).fill(''),
+  datasets: [{
+    label: 'Input',
+    data: downsample(waveformData.value.input, MAX_POINTS),
+    borderColor: 'blue',
+    fill: false,
+    pointRadius: 0,
+  }],
+}));
 
-const outputChartData = computed(() => {
-  const downsampledData = downsample(waveformData.value.output, MAX_POINTS);
-  const downsampledAnomalies = downsampleAnomalies(waveformData.value.anomalies || [], waveformData.value.output.length, MAX_POINTS);
-  return {
-    labels: Array(downsampledData.length).fill(''),
-    datasets: [
-      {
-        label: 'Output',
-        data: downsampledData,
-        borderColor: 'green',
-        fill: false,
-        pointRadius: 0,
-      },
-      {
-        label: 'Anomalies',
-        data: downsampledAnomalies.map(idx => ({ x: idx, y: getDynamicRange(downsampledData).max * 0.9 })),
-        borderColor: 'red',
-        backgroundColor: 'rgba(255, 0, 0, 0.3)',
-        pointRadius: 2,
-        pointHoverRadius: 5,
-        fill: false,
-        showLine: false,
-      },
-    ],
-  };
-});
+const outputChartData = computed(() => ({
+  labels: Array(downsample(waveformData.value.output, MAX_POINTS).length).fill(''),
+  datasets: [
+    {
+      label: 'Output',
+      data: downsample(waveformData.value.output, MAX_POINTS),
+      borderColor: 'green',
+      fill: false,
+      pointRadius: 0,
+    },
+    {
+      label: 'Anomalies',
+      data: downsampleAnomalies(waveformData.value.anomalies || [], waveformData.value.output.length, MAX_POINTS)
+          .map(idx => ({ x: idx, y: getDynamicRange(downsample(waveformData.value.output, MAX_POINTS)).max * 0.9 })),
+      borderColor: 'red',
+      backgroundColor: 'rgba(255, 0, 0, 0.3)',
+      pointRadius: 2,
+      pointHoverRadius: 5,
+      fill: false,
+      showLine: false,
+    },
+  ],
+}));
 
 // Opțiuni grafice cu axa Y dinamică
-const inputChartOptions = computed(() => {
-  const range = getDynamicRange(waveformData.value.input);
-  return {
-    animation: false,
-    maintainAspectRatio: false,
-    scales: {
-      x: { display: false },
-      y: {
-        min: range.min,
-        max: range.max,
-      },
-    },
-  };
-});
+const inputChartOptions = computed(() => ({
+  animation: false,
+  maintainAspectRatio: false,
+  scales: {
+    x: { display: false },
+    y: { min: getDynamicRange(waveformData.value.input).min, max: getDynamicRange(waveformData.value.input).max },
+  },
+}));
 
-const outputChartOptions = computed(() => {
-  const range = getDynamicRange(waveformData.value.output);
-  return {
-    animation: false,
-    maintainAspectRatio: false,
-    scales: {
-      x: { display: false },
-      y: {
-        min: range.min,
-        max: range.max,
+const outputChartOptions = computed(() => ({
+  animation: false,
+  maintainAspectRatio: false,
+  scales: {
+    x: { display: false },
+    y: { min: getDynamicRange(waveformData.value.output).min, max: getDynamicRange(waveformData.value.output).max },
+  },
+  plugins: {
+    tooltip: {
+      callbacks: {
+        label: (context) => (context.dataset.label === 'Anomalies' ? 'Anomaly detected' : `${context.dataset.label}: ${context.parsed.y}`),
       },
     },
-    plugins: {
-      tooltip: {
-        callbacks: {
-          label: (context) => {
-            if (context.dataset.label === 'Anomalies') {
-              return 'Anomaly detected';
-            }
-            return `${context.dataset.label}: ${context.parsed.y}`;
-          },
-        },
-      },
-    },
-  };
-});
+  },
+}));
 
 // Calculează poziția persoanelor pe hartă
 const getPersonPositionStyle = (person) => {
   const mapSize = 200;
   const roomSize = 400;
-
-  const xPixel = (person.x / roomSize) * mapSize;
-  const yPixel = (person.y / roomSize) * mapSize;
-
   return {
-    left: `${xPixel}px`,
-    top: `${yPixel}px`,
+    left: `${(person.x / roomSize) * mapSize}px`,
+    top: `${(person.y / roomSize) * mapSize}px`,
     transform: 'translate(-50%, -50%)',
   };
 };
@@ -268,13 +246,9 @@ const getPersonPositionStyle = (person) => {
 const getSpeakerPositionStyle = (pos) => {
   const mapSize = 200;
   const roomSize = 400;
-
-  const xPixel = (pos.x / roomSize) * mapSize;
-  const yPixel = (pos.y / roomSize) * mapSize;
-
   return {
-    left: `${xPixel}px`,
-    top: `${yPixel}px`,
+    left: `${(pos.x / roomSize) * mapSize}px`,
+    top: `${(pos.y / roomSize) * mapSize}px`,
     transform: 'translate(-50%, -50%)',
   };
 };
@@ -283,40 +257,47 @@ const getSpeakerPositionStyle = (pos) => {
 const socket = io('http://raspberrypi.local:5500');
 
 onMounted(() => {
-  socket.on('connect', () => {
-    console.log('Conectat la server WebSocket');
-  });
+  socket.on('connect', () => console.log('Conectat la server WebSocket'));
 
-  socket.on('data_input', (data) => {
-    store.commit('setWaveformData', { input: data.input || [], output: waveformData.value.output, anomalies: waveformData.value.anomalies });
-  });
-
-  socket.on('data_output', (data) => {
-    store.commit('setWaveformData', { input: waveformData.value.input, output: data.output || [], anomalies: data.anomalies || [] });
-  });
-
+  socket.on('data_input', (data) => store.commit('setWaveformData', { input: data.input || [], output: waveformData.value.output, anomalies: waveformData.value.anomalies }));
+  socket.on('data_output', (data) => store.commit('setWaveformData', { input: waveformData.value.input, output: data.output || [], anomalies: data.anomalies || [] }));
   socket.on('sensors', (data) => {
-    store.commit('setSensors', data);
+    console.log('Received sensors data:', data); // Debug
+    store.commit('setSensors', { Dreapta: data[0], Stânga: data[1], Față: data[2], Spate: data[3] }); // Asigură mapare explicită
   });
-
   socket.on('people', (data) => {
     peopleCount.value = data.count;
     peoplePositions.value = data.positions;
   });
-
   socket.on('params', (data) => {
     store.commit('setDelayL', data.delay_l);
     store.commit('setDelayR', data.delay_r);
     store.commit('setRunning', data.running);
   });
+  socket.on('speaker_position', (data) => (speakerPos.value = { x: data.x, y: data.y }));
 
-  socket.on('speaker_position', (data) => {
-    speakerPos.value = { x: data.x, y: data.y };
-  });
+  socket.on('logs', (data) => store.commit('setLogs', data));
 
-  socket.on('logs', (data) => {
-    store.commit('setLogs', data);
-  });
+  const fetchLogs = async () => {
+    try {
+      const [generalRes, sensorsRes, peopleRes, audioRes] = await Promise.all([
+        axios.get('http://raspberrypi.local:5500/logs/general'),
+        axios.get('http://raspberrypi.local:5500/logs/sensors'),
+        axios.get('http://raspberrypi.local:5500/logs/people'),
+        axios.get('http://raspberrypi.local:5500/logs/audio'),
+      ]);
+      logsGeneral.value = generalRes.data.logs.reverse().slice(0, 200); // Ordine descrescătoare, max 200
+      logsSensors.value = sensorsRes.data.logs.reverse().slice(0, 200);
+      logsPeople.value = peopleRes.data.logs.reverse().slice(0, 200);
+      logsAudio.value = audioRes.data.logs.reverse().slice(0, 200);
+    } catch (error) {
+      console.error('Eroare la încărcarea logurilor:', error);
+      toast.error('Eroare la încărcarea logurilor');
+    }
+  };
+
+  fetchLogs();
+  setInterval(fetchLogs, 5000);
 
   socket.on('disconnect', () => {
     console.log('Deconectat de la server WebSocket');
@@ -324,14 +305,15 @@ onMounted(() => {
     store.commit('setSensors', { Dreapta: 'Eroare', Stânga: 'Eroare', Față: 'Eroare', Spate: 'Eroare' });
     peopleCount.value = 0;
     peoplePositions.value = [];
+    logsGeneral.value = [];
+    logsSensors.value = [];
+    logsPeople.value = [];
+    logsAudio.value = [];
   });
 });
 
-onUnmounted(() => {
-  socket.disconnect();
-});
+onUnmounted(() => socket.disconnect());
 
-// Funcție pentru toggle procesare
 const toggleProcessing = async () => {
   try {
     const res = await axios.post('http://raspberrypi.local:5500/toggle');
@@ -349,10 +331,30 @@ const toggleProcessing = async () => {
   max-width: 1200px;
   margin: 0 auto;
   padding: 20px;
+  background: linear-gradient(135deg, #f0f4f8, #d9e2ec);
+  border-radius: 10px;
+  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+}
+
+.title {
+  text-align: center;
+  color: #333;
+  text-shadow: 1px 1px 3px rgba(0, 0, 0, 0.1);
+  margin-bottom: 20px;
 }
 
 .control-form {
   margin-bottom: 20px;
+  padding: 15px;
+  background: #fff;
+  border-radius: 8px;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.05);
+  transform: perspective(500px) rotateX(5deg);
+  transition: transform 0.3s;
+}
+
+.control-form:hover {
+  transform: perspective(500px) rotateX(0deg);
 }
 
 .button-group {
@@ -362,16 +364,44 @@ const toggleProcessing = async () => {
 .start-stop {
   padding: 10px 20px;
   margin-right: 10px;
+  background-color: #007bff;
+  color: #fff;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: background-color 0.3s, transform 0.2s;
+}
+
+.start-stop:hover {
+  background-color: #0056b3;
+  transform: translateY(-2px);
 }
 
 .chart-container {
   display: flex;
   justify-content: space-between;
   margin-bottom: 20px;
+  gap: 20px;
 }
 
 .chart-box {
   width: 48%;
+  padding: 15px;
+  background: #fff;
+  border-radius: 8px;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.05);
+  transform: perspective(500px) rotateX(5deg);
+  transition: transform 0.3s;
+}
+
+.chart-box:hover {
+  transform: perspective(500px) rotateX(0deg);
+}
+
+.chart-title {
+  text-align: center;
+  color: #333;
+  margin-bottom: 10px;
 }
 
 .chart {
@@ -381,19 +411,47 @@ const toggleProcessing = async () => {
 .logs-container {
   display: flex;
   justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 20px;
 }
 
 .logs-box {
   width: 48%;
+  padding: 15px;
+  background: #fff;
+  border-radius: 8px;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.05);
+  transform: perspective(500px) rotateX(5deg);
+  transition: transform 0.3s;
 }
 
-.logs-box ul {
+.logs-box:hover {
+  transform: perspective(500px) rotateX(0deg);
+}
+
+.section-title {
+  text-align: center;
+  color: #333;
+  margin-bottom: 10px;
+}
+
+.stats-list, .sensors-list, .log-list {
   list-style: none;
   padding: 0;
+  max-height: 250px; /* Mărire la 250px */
+  overflow-y: auto;
 }
 
-.logs-box li {
+.stats-list li, .sensors-list li, .log-item {
   margin-bottom: 10px;
+  padding: 5px;
+  background: #f9f9f9;
+  border-radius: 4px;
+  transition: background 0.3s;
+}
+
+.stats-list li:hover, .sensors-list li:hover, .log-item:hover {
+  background: #e9ecef;
 }
 
 .sensors-section {
@@ -410,9 +468,11 @@ const toggleProcessing = async () => {
   position: relative;
   width: 200px;
   height: 200px;
-  border: 1px solid #ccc;
-  background-color: #f9f9f9;
+  border: 2px solid #ccc;
+  background: linear-gradient(45deg, #fff, #f0f4f8);
   margin-left: 20px;
+  border-radius: 8px;
+  box-shadow: inset 0 2px 5px rgba(0, 0, 0, 0.1);
 }
 
 .sensor-marker {
@@ -421,20 +481,26 @@ const toggleProcessing = async () => {
   height: 10px;
   background-color: red;
   border-radius: 50%;
+  transition: transform 0.2s;
+}
+
+.sensor-marker:hover {
+  transform: scale(1.2);
 }
 
 .sensor-marker:hover::after {
   content: attr(data-distance);
   position: absolute;
-  top: -20px;
+  top: -25px;
   left: 50%;
   transform: translateX(-50%);
   background-color: #333;
   color: #fff;
-  padding: 2px 5px;
-  border-radius: 3px;
+  padding: 4px 8px;
+  border-radius: 4px;
   font-size: 12px;
   white-space: nowrap;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
 }
 
 .speaker-marker {
@@ -443,6 +509,11 @@ const toggleProcessing = async () => {
   height: 12px;
   background-color: blue;
   border-radius: 50%;
+  transition: transform 0.2s;
+}
+
+.speaker-marker:hover {
+  transform: scale(1.2);
 }
 
 .speaker-center-marker {
@@ -460,6 +531,53 @@ const toggleProcessing = async () => {
   height: 8px;
   background-color: green;
   border-radius: 50%;
+  transition: transform 0.2s;
+}
+
+.person-marker:hover {
+  transform: scale(1.2);
+}
+
+.logs-section {
+  width: 100%;
+}
+
+.tabs {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 10px;
+  justify-content: center;
+}
+
+.tabs button {
+  padding: 8px 15px;
+  border: 1px solid #ccc;
+  background-color: #f1f1f1;
+  cursor: pointer;
+  border-radius: 5px;
+  transition: all 0.3s;
+}
+
+.tabs button.active {
+  background-color: #007bff;
+  color: #fff;
+  border-color: #007bff;
+  transform: translateY(-2px);
+}
+
+.log-content {
+  border: 1px solid #ccc;
+  padding: 10px;
+  max-height: 250px; /* Mărire la 250px */
+  overflow-y: auto;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.05);
+}
+
+.log-content ul {
+  list-style: none;
+  padding: 0;
 }
 
 @media (max-width: 768px) {
@@ -473,6 +591,15 @@ const toggleProcessing = async () => {
   .room-map {
     margin-left: 0;
     margin-top: 10px;
+  }
+  .logs-section {
+    width: 100%;
+  }
+  .chart-container {
+    flex-direction: column;
+  }
+  .chart-box {
+    width: 100%;
   }
 }
 </style>

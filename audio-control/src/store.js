@@ -6,7 +6,7 @@ export const store = createStore({
             running: false,
             delayL: 10,
             delayR: 12,
-            waveformData: { input: [], output: [] },
+            waveformData: { input: [], output: [], anomalies: [] },
             logs: {
                 input_max_amplitude: 0,
                 output_max_amplitude: 0,
@@ -20,7 +20,11 @@ export const store = createStore({
                 Stânga: 'Eroare',
                 Față: 'Eroare',
                 Spate: 'Eroare'
-            }
+            },
+            logsGeneral: [],
+            logsSensors: [],
+            logsPeople: [],
+            logsAudio: []
         };
     },
     mutations: {
@@ -41,6 +45,18 @@ export const store = createStore({
         },
         setSensors(state, sensors) {
             state.sensors = sensors;
+        },
+        setLogsGeneral(state, logs) {
+            state.logsGeneral = logs;
+        },
+        setLogsSensors(state, logs) {
+            state.logsSensors = logs;
+        },
+        setLogsPeople(state, logs) {
+            state.logsPeople = logs;
+        },
+        setLogsAudio(state, logs) {
+            state.logsAudio = logs;
         }
     }
 });
