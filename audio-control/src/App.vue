@@ -13,6 +13,11 @@
         <span>{{ delayR }} ms</span>
       </label>
       <br />
+      <label>
+        Audio Amplitude (Mic):
+        <span>{{ audioAmplitude }} units</span>
+      </label>
+      <br />
 
       <div class="button-group">
         <button @click="toggleProcessing" class="start-stop">
@@ -32,6 +37,20 @@
       </div>
     </div>
 
+    <div class="eq-chart-container">
+      <div class="chart-box">
+        <h2 class="chart-title">Equalization Gains</h2>
+        <Chart type="bar" :data="eqChartData" :options="eqChartOptions" class="chart" />
+      </div>
+    </div>
+
+    <div class="audio-chart-container">
+      <div class="chart-box">
+        <h2 class="chart-title">Microphone Waveform</h2>
+        <Chart type="line" :data="audioChartData" :options="audioChartOptions" class="chart" />
+      </div>
+    </div>
+
     <div class="logs-container">
       <div class="logs-box">
         <h2 class="section-title">Raspberry Pi Stats</h2>
@@ -48,17 +67,17 @@
         <h2 class="section-title">Sensor Distances</h2>
         <div class="sensors-content">
           <ul class="sensors-list">
-            <li>Dreapta: {{ sensors.Dreapta }} cm</li>
-            <li>Stânga: {{ sensors.Stânga }} cm</li>
-            <li>Față: {{ sensors.Față }} cm</li>
-            <li>Spate: {{ sensors.Spate }} cm</li>
+            <li>Dreapta: {{ sensors.distances[0] || 'Eroare' }} cm</li>
+            <li>Stânga: {{ sensors.distances[1] || 'Eroare' }} cm</li>
+            <li>Față: {{ sensors.distances[2] || 'Eroare' }} cm</li>
+            <li>Spate: {{ sensors.distances[3] || 'Eroare' }} cm</li>
             <li>Persoane detectate: {{ peopleCount }}</li>
           </ul>
           <div class="room-map">
-            <div class="sensor-marker" id="sensor-fata" :data-distance="sensors.Față + ' cm'" style="top: 0; left: 50%; transform: translateX(-50%);"></div>
-            <div class="sensor-marker" id="sensor-spate" :data-distance="sensors.Spate + ' cm'" style="bottom: 0; left: 50%; transform: translateX(-50%);"></div>
-            <div class="sensor-marker" id="sensor-stanga" :data-distance="sensors.Stânga + ' cm'" style="top: 50%; left: 0; transform: translateY(-50%);"></div>
-            <div class="sensor-marker" id="sensor-dreapta" :data-distance="sensors.Dreapta + ' cm'" style="top: 50%; right: 0; transform: translateY(-50%);"></div>
+            <div class="sensor-marker" id="sensor-fata" :data-distance="sensors.distances[2] + ' cm' || 'Eroare cm'" style="top: 0; left: 50%; transform: translateX(-50%);"></div>
+            <div class="sensor-marker" id="sensor-spate" :data-distance="sensors.distances[3] + ' cm' || 'Eroare cm'" style="bottom: 0; left: 50%; transform: translateX(-50%);"></div>
+            <div class="sensor-marker" id="sensor-stanga" :data-distance="sensors.distances[1] + ' cm' || 'Eroare cm'" style="top: 50%; left: 0; transform: translateY(-50%);"></div>
+            <div class="sensor-marker" id="sensor-dreapta" :data-distance="sensors.distances[0] + ' cm' || 'Eroare cm'" style="top: 50%; right: 0; transform: translateY(-50%);"></div>
             <div class="speaker-marker" id="speaker" :style="getSpeakerPositionStyle(speakerPos)"></div>
             <div class="speaker-center-marker" style="left: 50%; top: 50%; transform: translate(-50%, -50%);"></div>
             <div v-for="(person, index) in peoplePositions" :key="index" class="person-marker" :style="getPersonPositionStyle(person)"></div>
@@ -107,6 +126,7 @@ import {
   LinearScale,
   Title,
   CategoryScale,
+  BarElement,
 } from 'chart.js';
 import { useStore } from 'vuex';
 import { computed, onMounted, onUnmounted, ref } from 'vue';
@@ -115,7 +135,7 @@ import { useToast } from '@brackets/vue-toastification';
 import { io } from 'socket.io-client';
 
 // Înregistrăm componentele Chart.js
-ChartJS.register(LineElement, PointElement, LinearScale, Title, CategoryScale);
+ChartJS.register(LineElement, PointElement, LinearScale, Title, CategoryScale, BarElement);
 
 // Vuex store
 const store = useStore();
@@ -126,17 +146,22 @@ const waveformData = computed(() => store.state.waveformData);
 const logs = computed(() => store.state.logs);
 const sensors = computed(() => store.state.sensors);
 
-// Date despre persoane și boxă
+// Date despre persoane, boxă și audio
 const peopleCount = ref(0);
 const peoplePositions = ref([]);
 const speakerPos = ref({ x: 200, y: 200 });
+const audioAmplitude = ref(0); // Amplitudinea maximă a microfonului
+const micWaveformData = ref([]); // Date brute ale microfonului
 
-// Loguri (mărite la 200 de intrări, ordonate descrescător)
+// Loguri
 const logsGeneral = ref([]);
 const logsSensors = ref([]);
 const logsPeople = ref([]);
 const logsAudio = ref([]);
 const activeTab = ref('general');
+
+// Date pentru egalizare
+const eqData = ref({ bass: 1.0, mid: 1.0, treble: 1.0 });
 
 // Date pentru anomalii
 const anomalyIndices = ref([]);
@@ -191,21 +216,34 @@ const outputChartData = computed(() => ({
       fill: false,
       pointRadius: 0,
     },
-    {
-      label: 'Anomalies',
-      data: downsampleAnomalies(waveformData.value.anomalies || [], waveformData.value.output.length, MAX_POINTS)
-          .map(idx => ({ x: idx, y: getDynamicRange(downsample(waveformData.value.output, MAX_POINTS)).max * 0.9 })),
-      borderColor: 'red',
-      backgroundColor: 'rgba(255, 0, 0, 0.3)',
-      pointRadius: 2,
-      pointHoverRadius: 5,
-      fill: false,
-      showLine: false,
-    },
   ],
 }));
 
-// Opțiuni grafice cu axa Y dinamică
+const eqChartData = computed(() => ({
+  labels: ['Bass (20-250 Hz)', 'Mid (250-4000 Hz)', 'Treble (4000-20000 Hz)'],
+  datasets: [{
+    label: 'Gain Factor',
+    data: [eqData.value.bass, eqData.value.mid, eqData.value.treble],
+    backgroundColor: ['#FF6384', '#36A2EB', '#FFCE56'],
+    borderColor: ['#FF6384', '#36A2EB', '#FFCE56'],
+    borderWidth: 1,
+  }],
+}));
+
+const audioChartData = computed(() => {
+  console.log('Audio Chart Data:', downsample(micWaveformData.value, MAX_POINTS)); // Log pentru verificare
+  return {
+    labels: Array(downsample(micWaveformData.value, MAX_POINTS).length).fill(''),
+    datasets: [{
+      label: 'Mic Waveform',
+      data: downsample(micWaveformData.value, MAX_POINTS),
+      borderColor: 'purple',
+      fill: false,
+      pointRadius: 0,
+    }],
+  };
+});
+
 const inputChartOptions = computed(() => ({
   animation: false,
   maintainAspectRatio: false,
@@ -228,6 +266,36 @@ const outputChartOptions = computed(() => ({
         label: (context) => (context.dataset.label === 'Anomalies' ? 'Anomaly detected' : `${context.dataset.label}: ${context.parsed.y}`),
       },
     },
+  },
+}));
+
+const eqChartOptions = computed(() => ({
+  animation: false,
+  maintainAspectRatio: false,
+  scales: {
+    y: {
+      beginAtZero: true,
+      min: 0,
+      max: 1.5,
+      title: { display: true, text: 'Gain' },
+    },
+  },
+  plugins: {
+    legend: { position: 'top' },
+    tooltip: {
+      callbacks: {
+        label: (context) => `${context.label}: ${context.parsed.y.toFixed(2)}x`,
+      },
+    },
+  },
+}));
+
+const audioChartOptions = computed(() => ({
+  animation: false,
+  maintainAspectRatio: false,
+  scales: {
+    x: { display: false },
+    y: { min: -32768, max: 32768 }, // Scală pentru date int16 brute
   },
 }));
 
@@ -254,39 +322,58 @@ const getSpeakerPositionStyle = (pos) => {
 };
 
 // Configurare WebSocket
-const socket = io('http://raspberrypi.local:5500');
+const socket = io('http://192.168.3.28:5500');
 
 onMounted(() => {
   socket.on('connect', () => console.log('Conectat la server WebSocket'));
 
-  socket.on('data_input', (data) => store.commit('setWaveformData', { input: data.input || [], output: waveformData.value.output, anomalies: waveformData.value.anomalies }));
-  socket.on('data_output', (data) => store.commit('setWaveformData', { input: waveformData.value.input, output: data.output || [], anomalies: data.anomalies || [] }));
+  socket.on('data_input', (data) => store.commit('setWaveformData', {
+    input: data.input || [],
+    output: waveformData.value.output,
+    anomalies: waveformData.value.anomalies,
+  }));
+  socket.on('data_output', (data) => store.commit('setWaveformData', {
+    input: waveformData.value.input,
+    output: data.output || [],
+    anomalies: data.anomalies || [],
+  }));
   socket.on('sensors', (data) => {
-    console.log('Received sensors data:', data); // Debug
-    store.commit('setSensors', { Dreapta: data[0], Stânga: data[1], Față: data[2], Spate: data[3] }); // Asigură mapare explicită
+    console.log('Received sensors data:', data);
+    store.commit('setSensors', data);
   });
   socket.on('people', (data) => {
     peopleCount.value = data.count;
-    peoplePositions.value = data.positions;
+    peoplePositions.value = data.positions.map(pos => ({x: pos.x, y: pos.y}));
   });
   socket.on('params', (data) => {
     store.commit('setDelayL', data.delay_l);
     store.commit('setDelayR', data.delay_r);
     store.commit('setRunning', data.running);
   });
-  socket.on('speaker_position', (data) => (speakerPos.value = { x: data.x, y: data.y }));
-
+  socket.on('speaker_position', (data) => (speakerPos.value = {x: data.x, y: data.y}));
+  socket.on('equalization_data', (data) => {
+    eqData.value.bass = data.bass;
+    eqData.value.mid = data.mid;
+    eqData.value.treble = data.treble;
+  });
+  socket.on('audio_data', (data) => {
+    audioAmplitude.value = data.amplitude || 0;
+  });
+  socket.on('microphone_data', (data) =>  {
+    console.log('Received microphone data:', data); // Log pentru verificare
+    micWaveformData.value = data.input || [];
+  });
   socket.on('logs', (data) => store.commit('setLogs', data));
 
   const fetchLogs = async () => {
     try {
       const [generalRes, sensorsRes, peopleRes, audioRes] = await Promise.all([
-        axios.get('http://raspberrypi.local:5500/logs/general'),
-        axios.get('http://raspberrypi.local:5500/logs/sensors'),
-        axios.get('http://raspberrypi.local:5500/logs/people'),
-        axios.get('http://raspberrypi.local:5500/logs/audio'),
+        axios.get('http://192.168.3.28:5500/logs/general'),
+        axios.get('http://192.168.3.28:5500/logs/sensors'),
+        axios.get('http://192.168.3.28:5500/logs/people'),
+        axios.get('http://192.168.3.28:5500/logs/audio'),
       ]);
-      logsGeneral.value = generalRes.data.logs.reverse().slice(0, 200); // Ordine descrescătoare, max 200
+      logsGeneral.value = generalRes.data.logs.reverse().slice(0, 200);
       logsSensors.value = sensorsRes.data.logs.reverse().slice(0, 200);
       logsPeople.value = peopleRes.data.logs.reverse().slice(0, 200);
       logsAudio.value = audioRes.data.logs.reverse().slice(0, 200);
@@ -301,10 +388,12 @@ onMounted(() => {
 
   socket.on('disconnect', () => {
     console.log('Deconectat de la server WebSocket');
-    store.commit('setWaveformData', { input: [], output: [], anomalies: [] });
-    store.commit('setSensors', { Dreapta: 'Eroare', Stânga: 'Eroare', Față: 'Eroare', Spate: 'Eroare' });
+    store.commit('setWaveformData', {input: [], output: [], anomalies: []});
+    store.commit('setSensors', {distances: ['Eroare', 'Eroare', 'Eroare', 'Eroare'], positions: []});
     peopleCount.value = 0;
     peoplePositions.value = [];
+    audioAmplitude.value = 0;
+    micWaveformData.value = [];
     logsGeneral.value = [];
     logsSensors.value = [];
     logsPeople.value = [];
@@ -316,7 +405,7 @@ onUnmounted(() => socket.disconnect());
 
 const toggleProcessing = async () => {
   try {
-    const res = await axios.post('http://raspberrypi.local:5500/toggle');
+    const res = await axios.post('http://192.168.3.28:5500/toggle');
     store.commit('setRunning', res.data.running);
     toast.success(res.data.running ? 'Procesare pornită' : 'Procesare oprită');
   } catch (error) {
@@ -384,6 +473,14 @@ const toggleProcessing = async () => {
   gap: 20px;
 }
 
+.eq-chart-container {
+  margin-bottom: 20px;
+}
+
+.audio-chart-container {
+  margin-bottom: 20px;
+}
+
 .chart-box {
   width: 48%;
   padding: 15px;
@@ -438,7 +535,7 @@ const toggleProcessing = async () => {
 .stats-list, .sensors-list, .log-list {
   list-style: none;
   padding: 0;
-  max-height: 250px; /* Mărire la 250px */
+  max-height: 250px;
   overflow-y: auto;
 }
 
@@ -568,7 +665,7 @@ const toggleProcessing = async () => {
 .log-content {
   border: 1px solid #ccc;
   padding: 10px;
-  max-height: 250px; /* Mărire la 250px */
+  max-height: 250px;
   overflow-y: auto;
   border-radius: 8px;
   background: #fff;
@@ -585,21 +682,34 @@ const toggleProcessing = async () => {
     width: 100%;
     margin-bottom: 20px;
   }
+
   .sensors-content {
     flex-direction: column;
   }
+
   .room-map {
     margin-left: 0;
     margin-top: 10px;
   }
+
   .logs-section {
     width: 100%;
   }
+
   .chart-container {
     flex-direction: column;
   }
+
   .chart-box {
     width: 100%;
+  }
+
+  .eq-chart-container {
+    margin-top: 20px;
+  }
+
+  .audio-chart-container {
+    margin-top: 20px;
   }
 }
 </style>
