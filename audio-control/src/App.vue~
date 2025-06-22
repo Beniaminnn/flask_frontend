@@ -49,50 +49,35 @@
           </ul>
         </div>
         <div class="logs-box sensors-section">
-          <h2 class="section-title">Room Map & Sensors</h2>
+          <h2 class="section-title">Sensor Distances & People</h2>
           <div class="sensors-content">
             <div class="room-map-wrapper">
               <div class="room-map" :style="{ width: mapSize + 'px', height: mapSize + 'px' }">
-                <div class="speaker-center-marker" style="left: 50%; top: 50%; transform: translate(-50%, -50%);"></div>
-                <!-- Senzor Față (în față, la 0° din perspectiva difuzorului) -->
+                <div v-for="(angle, index) in sensorAngles" :key="'angle-' + index" class="angle-indicator" :style="getAngleIndicatorStyle(index, angle)" v-if="isDataReady"></div>
                 <div class="sensor-marker" id="sensor-fata" :data-distance="sensors.distances[2] !== -1 ? `${sensors.distances[2]} cm` : 'Eroare cm'" style="top: 0; left: 50%; transform: translateX(-50%);"></div>
-                <!-- Senzor Spate (în spate, la 180°) -->
                 <div class="sensor-marker" id="sensor-spate" :data-distance="sensors.distances[3] !== -1 ? `${sensors.distances[3]} cm` : 'Eroare cm'" style="bottom: 0; left: 50%; transform: translateX(-50%);"></div>
-                <!-- Senzor Stânga (la 90° stânga) -->
                 <div class="sensor-marker" id="sensor-stanga" :data-distance="sensors.distances[1] !== -1 ? `${sensors.distances[1]} cm` : 'Eroare cm'" style="top: 50%; left: 0; transform: translateY(-50%);"></div>
-                <!-- Senzor Dreapta (la 270° dreapta) -->
                 <div class="sensor-marker" id="sensor-dreapta" :data-distance="sensors.distances[0] !== -1 ? `${sensors.distances[0]} cm` : 'Eroare cm'" style="top: 50%; right: 0; transform: translateY(-50%);"></div>
                 <div class="speaker-marker" id="speaker" :style="getSpeakerPositionStyle(speakerPos)" :data-position="`x: ${speakerPos.x.toFixed(1)} cm, y: ${speakerPos.y.toFixed(1)} cm`"></div>
+                <div class="speaker-center-marker" style="left: 50%; top: 50%; transform: translate(-50%, -50%);"></div>
                 <div v-for="(person, index) in peoplePositions" :key="index" class="person-marker" :style="getPersonPositionStyle(person)" :data-position="`x: ${person.x.toFixed(1)} cm, y: ${person.y.toFixed(1)} cm`"></div>
-                <div v-for="(angle, index) in sensorAngles" :key="'angle-' + index" class="angle-indicator" :style="getAngleIndicatorStyle(index, angle)" v-if="isDataReady"></div>
               </div>
             </div>
             <ul class="sensors-list" v-if="isDataReady">
               <li>Dreapta: {{ sensors.distances[0] !== -1 ? `${sensors.distances[0]} cm` : 'Eroare' }} (Unghi: {{ getSafeAngle(sensorAngles[0]) }})</li>
-              <li>Stanga: {{ sensors.distances[1] !== -1 ? `${sensors.distances[1]} cm` : 'Eroare' }} (Unghi: {{ getSafeAngle(sensorAngles[1]) }})</li>
-              <li>Fata: {{ sensors.distances[2] !== -1 ? `${sensors.distances[2]} cm` : 'Eroare' }} (Unghi: {{ getSafeAngle(sensorAngles[2]) }})</li>
+              <li>Stânga: {{ sensors.distances[1] !== -1 ? `${sensors.distances[1]} cm` : 'Eroare' }} (Unghi: {{ getSafeAngle(sensorAngles[1]) }})</li>
+              <li>Față: {{ sensors.distances[2] !== -1 ? `${sensors.distances[2]} cm` : 'Eroare' }} (Unghi: {{ getSafeAngle(sensorAngles[2]) }})</li>
               <li>Spate: {{ sensors.distances[3] !== -1 ? `${sensors.distances[3]} cm` : 'Eroare' }} (Unghi: {{ getSafeAngle(sensorAngles[3]) }})</li>
               <li>Persoane detectate: {{ peopleCount }}</li>
             </ul>
+            <ul class="people-list" v-if="peopleCount > 0 && isDataReady">
+              <li v-for="(person, index) in peoplePositions" :key="index" class="person-item">
+                Persoana {{ index + 1 }}: x={{ person.x.toFixed(1) }} cm, y={{ person.y.toFixed(1) }} cm,
+                vx={{ sensors.velocities[index * 2] || 0 }} cm/s, vy={{ sensors.velocities[index * 2 + 1] || 0 }} cm/s,
+                conf={{ sensors.confidence[0] || 0 }}
+              </li>
+            </ul>
             <p v-if="hasOverlap" class="overlap-warning">Atenție: Detectări multiple pot indica suprapuneri sau reflexii (unghiuri largi).</p>
-          </div>
-          <!-- Container nou pentru persoanele detectate -->
-          <div class="people-container" v-if="peopleCount > 0 && isDataReady">
-            <h3 class="people-title">Detected People</h3>
-            <div class="people-cards">
-              <div v-for="(person, index) in peoplePositions" :key="index" class="person-card">
-                <div class="person-card-header">
-                  <span class="person-number">Person {{ index + 1 }}</span>
-                  <span class="person-confidence" :style="{ color: getConfidenceColor(sensors.confidence[0] || 0) }">
-                    Confidence: {{ (sensors.confidence[0] || 0).toFixed(2) }}
-                  </span>
-                </div>
-                <div class="person-details">
-                  <p>Position: x={{ person.x.toFixed(1) }} cm, y={{ person.y.toFixed(1) }} cm</p>
-                  <p>Velocity: vx={{ sensors.velocities[index * 2] || 0 }} cm/s, vy={{ sensors.velocities[index * 2 + 1] || 0 }} cm/s</p>
-                </div>
-              </div>
-            </div>
           </div>
         </div>
       </div>
@@ -182,7 +167,7 @@ const inputChartData = computed(() => ({
   datasets: [{
     label: 'Input',
     data: downsample(waveformData.value.input, MAX_POINTS),
-    borderColor: '#007bff',
+    borderColor: '#007bff', // Distinctive color for light/dark themes
     fill: false,
     pointRadius: 0,
   }],
@@ -194,14 +179,14 @@ const outputChartData = computed(() => ({
     {
       label: 'Output',
       data: downsample(waveformData.value.output, MAX_POINTS),
-      borderColor: '#28a745',
+      borderColor: '#28a745', // Distinctive color for light/dark themes
       fill: false,
       pointRadius: 0,
     },
     ...(waveformData.value.anomalies.length > 0 ? [{
       label: 'Anomalies',
       data: downsample(waveformData.value.anomalies.map(i => ({ x: i, y: getDynamicRange(waveformData.value.output, waveformData.value.output_max_amplitude).max * 0.9 })), MAX_POINTS),
-      borderColor: '#dc3545',
+      borderColor: '#dc3545', // Distinctive color for light/dark themes
       pointRadius: 2,
       fill: false,
     }] : []),
@@ -250,21 +235,21 @@ const getAngleIndicatorStyle = (index, angle) => {
   const centerY = (speakerPos.value.y / 400) * mapSize.value;
   let startX, startY;
   switch (index) {
-    case 0: // Dreapta (270°)
+    case 0: // Dreapta
       startX = mapSize.value; startY = centerY;
       break;
-    case 1: // Stânga (90°)
+    case 1: // Stânga
       startX = 0; startY = centerY;
       break;
-    case 2: // Față (0°)
+    case 2: // Față
       startX = centerX; startY = 0;
       break;
-    case 3: // Spate (180°)
+    case 3: // Spate
       startX = centerX; startY = mapSize.value;
       break;
   }
-  const length = 50;
-  const endX = centerX + length * Math.cos((angle - 90) * Math.PI / 180);
+  const length = 50; // Lungime indicator (px)
+  const endX = centerX + length * Math.cos((angle - 90) * Math.PI / 180); // -90° pentru aliniere cu axa Y
   const endY = centerY + length * Math.sin((angle - 90) * Math.PI / 180);
   return {
     position: 'absolute',
@@ -280,12 +265,6 @@ const getAngleIndicatorStyle = (index, angle) => {
 
 const getSafeAngle = (angle) => {
   return angle !== null && angle !== undefined && !isNaN(angle) ? `${angle.toFixed(1)}°` : 'N/A';
-};
-
-const getConfidenceColor = (confidence) => {
-  if (confidence >= 0.7) return '#28a745';
-  if (confidence >= 0.4) return '#ffc107';
-  return '#dc3545';
 };
 
 const calculateAngles = () => {
@@ -306,10 +285,11 @@ const calculateAngles = () => {
     const angleRad = Math.atan2(dy, dx);
     const angleDeg = (angleRad * 180 / Math.PI + 360) % 360;
 
-    if (Math.abs(angleDeg - 0) < 45 || Math.abs(angleDeg - 360) < 45) angles[2] = angleDeg; // Față
-    if (Math.abs(angleDeg - 180) < 45) angles[3] = angleDeg; // Spate
-    if (Math.abs(angleDeg - 90) < 45) angles[1] = angleDeg; // Stânga
-    if (Math.abs(angleDeg - 270) < 45) angles[0] = angleDeg; // Dreapta
+    // Asignăm unghiul fiecărui senzor bazat pe direcția aproximată
+    if (Math.abs(angleDeg - 0) < 45 || Math.abs(angleDeg - 360) < 45) angles[0] = angleDeg; // Dreapta
+    if (Math.abs(angleDeg - 180) < 45) angles[1] = angleDeg; // Stânga
+    if (Math.abs(angleDeg - 90) < 45) angles[2] = angleDeg; // Față
+    if (Math.abs(angleDeg - 270) < 45) angles[3] = angleDeg; // Spate
   });
 
   sensorAngles.value = angles;
@@ -373,8 +353,8 @@ onMounted(() => {
       logsSensors.value = sensorsRes.data.logs.reverse().slice(0, 200) || [];
       logsPeople.value = peopleRes.data.logs.reverse().slice(0, 200) || [];
     } catch (error) {
-      console.error('Eroare la incarcarea logurilor:', error);
-      toast.error('Eroare la incarcarea logurilor');
+      console.error('Eroare la încărcarea logurilor:', error);
+      toast.error('Eroare la încărcarea logurilor');
     }
   };
 
@@ -415,7 +395,7 @@ const toggleProcessing = async () => {
   try {
     const res = await axios.post('http://192.168.3.28:5500/toggle');
     store.commit('setRunning', res.data.running);
-    toast.success(res.data.running ? 'Procesare pornita' : 'Procesare oprita');
+    toast.success(res.data.running ? 'Procesare pornită' : 'Procesare oprită');
   } catch (error) {
     console.error('Eroare la toggle:', error);
     toast.error('Eroare la toggle procesare');
@@ -594,14 +574,14 @@ const toast = useToast();
   font-size: 1.5rem;
 }
 
-.stats-list, .sensors-list, .log-list {
+.stats-list, .sensors-list, .people-list, .log-list {
   list-style: none;
   padding: 0;
   font-size: 1.1rem;
   line-height: 1.6;
 }
 
-.stats-list li, .sensors-list li, .log-item {
+.stats-list li, .sensors-list li, .people-list li, .log-item {
   margin-bottom: 10px;
   padding: 8px;
   background: #fff;
@@ -609,21 +589,23 @@ const toast = useToast();
   transition: background 0.3s;
 }
 
-.sensors-list li:hover, .stats-list li:hover, .log-item:hover {
+.people-list li {
+  border-left: 4px solid #28a745;
+}
+
+.stats-list li:hover, .sensors-list li:hover, .people-list li:hover, .log-item:hover {
   background: #e9ecef;
 }
 
 .sensors-content {
   display: flex;
-  flex-direction: row;
-  align-items: flex-start;
+  flex-direction: column;
+  align-items: center;
   width: 100%;
-  gap: 20px;
 }
 
 .room-map-wrapper {
-  flex: 1;
-  margin-bottom: 0;
+  margin-bottom: 20px;
 }
 
 .room-map {
@@ -698,62 +680,9 @@ const toast = useToast();
   text-align: center;
 }
 
-.people-container {
-  flex: 1;
-  max-width: 300px;
-}
-
-.people-title {
-  font-size: 1.3rem;
-  color: #333;
-  margin-bottom: 10px;
-  text-align: center;
-}
-
-.people-cards {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.person-card {
-  background: #fff;
-  border-radius: 8px;
-  padding: 10px;
-  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
-  transition: transform 0.2s, box-shadow 0.2s;
-}
-
-.person-card:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.15);
-}
-
-.person-card-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 5px;
-}
-
-.person-number {
-  font-weight: bold;
-  color: #28a745;
-}
-
-.person-confidence {
-  font-size: 0.9rem;
-}
-
-.person-details {
-  margin: 0;
-  font-size: 1rem;
-  color: #555;
-}
-
 .logs-section {
   width: 100%;
-  min-height: 200px;
+  min-height: 200px; /* Asigurăm o înălțime minimă */
 }
 
 .tabs {
@@ -787,8 +716,8 @@ const toast = useToast();
   background: #fff;
   font-size: 1rem;
   line-height: 1.8;
-  max-height: 300px;
-  overflow-y: auto;
+  max-height: 300px; /* Limită înălțime maximă */
+  overflow-y: auto; /* Adăugăm scrollbar când conținutul depășește */
 }
 
 .log-item {
@@ -826,15 +755,11 @@ const toast = useToast();
     margin-left: 0;
     margin-top: 10px;
   }
-  .people-container {
-    max-width: 100%;
-    margin-top: 20px;
-  }
   .chart {
     height: 200px;
   }
   .log-content {
-    max-height: 200px;
+    max-height: 200px; /* Ajustăm pentru ecrane mici */
   }
 }
 </style>
