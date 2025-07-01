@@ -8,20 +8,22 @@
 #define SAMPLE_INTERVAL 50
 #define ROOM_WIDTH 400
 #define ROOM_HEIGHT 400
-#define MOTION_THRESHOLD 15.0  // Mărit pentru a reduce zgomotul
+#define MOTION_THRESHOLD 15.0
 #define STABLE_COUNT 10
-#define BASELINE_UPDATE_INTERVAL 300000
+#define BASELINE_CALIBRATION_TIME 10000  // 1 minut pentru calibrare inițială
+#define BASELINE_UPDATE_INTERVAL 50000  // 5 minute pentru actualizare
 #define DT (SAMPLE_INTERVAL / 1000.0)
 #define MAX_PEOPLE 3
-#define DEBUG 1               // Activăm pentru depanare
+#define DEBUG 1
 #define CLUSTER_DISTANCE_THRESHOLD 50.0
 #define VELOCITY_SMOOTHING 0.8
 #define SERIAL_BAUD_RATE 115200
-#define MIN_TRANSMISSION_INTERVAL 100
+#define MIN_TRANSMISSION_INTERVAL 500  // Creștem intervalul minim la 500ms
 #define POSITION_PRECISION 1
 #define VELOCITY_PRECISION 2
 #define DISTANCE_PRECISION 0
-#define MIN_DETECTION_DISTANCE 30.0  // Prag minim pentru a ignora reflexii
+#define MIN_DETECTION_DISTANCE 30.0
+#define DEVIATION_THRESHOLD 5.0  // Prag pentru stabilitatea baseline-ului
 
 const int trigPins[NUM_SENSORS] = {13, 12, 14, 27}; // Dreapta, Stânga, Față, Spate
 const int echoPins[NUM_SENSORS] = {15, 4, 5, 18};   // Dreapta, Stânga, Față, Spate
@@ -33,6 +35,9 @@ struct SensorData {
   float maxDistance = MAX_DISTANCE;
   bool stable = true;
   float smoothedDistance = -1.0;
+  float movingAverage[10] = {0};  // Buffer pentru medie mobilă
+  uint8_t avgIndex = 0;
+  float deviation = 0.0;
 };
 
 struct KalmanState {
@@ -74,6 +79,7 @@ unsigned long lastTransmissionTime = 0;
 int stableCounter = 0;
 char jsonBuffer[384];
 bool dataChanged = false;
+bool initialCalibration = true;
 
 // Funcție îmbunătățită pentru măsurarea distanței cu filtrare
 float measureDistance(int trigPin, int echoPin) {
@@ -247,20 +253,54 @@ void kalmanUpdate(KalmanState &kalman, float measuredX, float measuredY) {
 }
 
 void updateBaseline() {
-  if (millis() - lastBaselineUpdate >= BASELINE_UPDATE_INTERVAL && stableCounter <= 1) {
+  unsigned long currentTime = millis();
+  if (initialCalibration && currentTime < BASELINE_CALIBRATION_TIME) {
     for (uint8_t i = 0; i < NUM_SENSORS; i++) {
-      if (sensors[i].maxDistance > sensors[i].baseline) {
-        sensors[i].baseline = max(sensors[i].maxDistance, 100.0f); // Conversie explicită la float
-        #if DEBUG
-        Serial.print("[DEBUG] Baseline actualizat pentru senzor ");
-        Serial.print(i);
-        Serial.print(": ");
-        Serial.println(sensors[i].baseline, 1);
-        #endif
+      if (sensors[i].distance > 0) {
+        sensors[i].movingAverage[sensors[i].avgIndex] = sensors[i].distance;
+        sensors[i].avgIndex = (sensors[i].avgIndex + 1) % 10;
+        float sum = 0;
+        for (uint8_t j = 0; j < 10; j++) sum += sensors[i].movingAverage[j];
+        sensors[i].baseline = sum / 10.0;
       }
-      sensors[i].maxDistance = MAX_DISTANCE;
     }
-    lastBaselineUpdate = millis();
+    return;
+  }
+
+  if (initialCalibration) {
+    initialCalibration = false;
+    for (uint8_t i = 0; i < NUM_SENSORS; i++) {
+      sensors[i].baseline = max(sensors[i].baseline, 100.0f);
+    }
+    lastBaselineUpdate = currentTime;
+    return;
+  }
+
+  if (currentTime - lastBaselineUpdate >= BASELINE_UPDATE_INTERVAL && stableCounter <= 1) {
+    for (uint8_t i = 0; i < NUM_SENSORS; i++) {
+      if (sensors[i].distance > 0) {
+        sensors[i].movingAverage[sensors[i].avgIndex] = sensors[i].distance;
+        sensors[i].avgIndex = (sensors[i].avgIndex + 1) % 10;
+        float sum = 0, mean = 0;
+        for (uint8_t j = 0; j < 10; j++) sum += sensors[i].movingAverage[j];
+        mean = sum / 10.0;
+        float devSum = 0;
+        for (uint8_t j = 0; j < 10; j++) devSum += pow(sensors[i].movingAverage[j] - mean, 2);
+        sensors[i].deviation = sqrt(devSum / 10.0);
+
+        if (sensors[i].deviation < DEVIATION_THRESHOLD && sensors[i].maxDistance > sensors[i].baseline) {
+          sensors[i].baseline = max(sensors[i].maxDistance, 100.0f);
+          #if DEBUG
+          Serial.print("[DEBUG] Baseline actualizat pentru senzor ");
+          Serial.print(i);
+          Serial.print(": ");
+          Serial.println(sensors[i].baseline, 1);
+          #endif
+        }
+        sensors[i].maxDistance = MAX_DISTANCE;
+      }
+    }
+    lastBaselineUpdate = currentTime;
   }
 }
 
@@ -318,24 +358,23 @@ void calculatePosition(float* distances, float& x, float& y, float& confidence) 
 void transmitData() {
   unsigned long currentTime = millis();
 
-  if (currentTime - lastTransmissionTime < MIN_TRANSMISSION_INTERVAL) {
-    return;
-  }
+  if (currentTime - lastTransmissionTime < MIN_TRANSMISSION_INTERVAL) return;
 
   uint8_t activeCount = 0;
   for (uint8_t i = 0; i < MAX_PEOPLE; i++) {
     if (people[i].active) activeCount++;
   }
 
-  String positions = "";
-  String velocities = "";
-  String confidences = "";
+  if (!dataChanged && activeCount == 0) return; // Nu transmitem dacă nu sunt schimbări
+
+  String positions = activeCount > 0 ? "[" : "[]";
+  String velocities = activeCount > 0 ? "[" : "[]";
+  String confidences = activeCount > 0 ? "[" : "[]";
 
   if (activeCount > 0) {
-    uint8_t count = 0;
     for (uint8_t i = 0; i < MAX_PEOPLE; i++) {
       if (people[i].active) {
-        if (count > 0) {
+        if (positions.length() > 2) {
           positions += ",";
           velocities += ",";
           confidences += ",";
@@ -345,31 +384,24 @@ void transmitData() {
         velocities += String(people[i].kalman.vx, VELOCITY_PRECISION) + "," +
                      String(people[i].kalman.vy, VELOCITY_PRECISION);
         confidences += String(people[i].confidence, 1);
-        count++;
       }
     }
+    positions += "]";
+    velocities += "]";
+    confidences += "]";
   }
 
-  Serial.print("{\"c\":");
-  Serial.print(activeCount);
-  Serial.print(",\"p\":[");
-  Serial.print(positions);
-  Serial.print("],\"d\":[");
-  Serial.print(sensors[0].distance, DISTANCE_PRECISION);
-  Serial.print(",");
-  Serial.print(sensors[1].distance, DISTANCE_PRECISION);
-  Serial.print(",");
-  Serial.print(sensors[2].distance, DISTANCE_PRECISION);
-  Serial.print(",");
-  Serial.print(sensors[3].distance, DISTANCE_PRECISION);
-  Serial.print("],\"v\":[");
-  Serial.print(velocities);
-  Serial.print("],\"f\":[");
-  Serial.print(confidences);
-  Serial.print("],\"t\":");
-  Serial.print(currentTime);
-  Serial.println("}");
+  String json = "{\"c\":" + String(activeCount) +
+                ",\"p\":" + positions +
+                ",\"d\":[" + String(sensors[0].distance, DISTANCE_PRECISION) + "," +
+                          String(sensors[1].distance, DISTANCE_PRECISION) + "," +
+                          String(sensors[2].distance, DISTANCE_PRECISION) + "," +
+                          String(sensors[3].distance, DISTANCE_PRECISION) + "]" +
+                ",\"v\":" + velocities +
+                ",\"f\":" + confidences +
+                ",\"t\":" + String(currentTime) + "}";
 
+  Serial.println(json);
   lastTransmissionTime = currentTime;
   dataChanged = false;
 }
