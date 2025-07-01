@@ -15,21 +15,22 @@ import logging
 import atexit
 import psutil
 import subprocess
+import sys
 
 # Configurare logging
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 log = logging.getLogger(__name__)
 
 # Configurare Flask si SocketIO
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
-socketio = SocketIO(app, cors_allowed_origins="*")
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading', ping_timeout=20, ping_interval=5, reconnection=True)
 
 # Configurare audio
 FORMAT = pyaudio.paInt16
 CHANNELS = 2
 RATE = 44100
-CHUNK = 1024
+CHUNK = 512
 LOOPBACK_DEVICE_INDEX = None
 IQAUDIO_DEVICE_INDEX = None
 p_proc = None
@@ -56,15 +57,8 @@ SPEAKER_POSITION = [ROOM_WIDTH / 2, ROOM_HEIGHT / 2]
 SPEAKER_POSITION_LOCK = threading.Lock()
 SPEAKER_WIDTH = 50
 
-HISTORY_LENGTH = 5
-TOLERANCE = 5.0
-MIN_CHANGE = 20.0
-
-sensor_history = [deque(maxlen=HISTORY_LENGTH) for _ in range(4)]
-sensor_baselines = [MAX_DISTANCE] * 4
+sensor_history = [deque(maxlen=10) for _ in range(4)]
 people_positions = []
-
-baseline_established = False
 
 AUDIO_QUEUE_IN = queue.Queue(maxsize=10)
 AUDIO_BUFFER_IN = deque(maxlen=5)
@@ -84,7 +78,7 @@ GENERAL_LOGS = []
 
 def log_debug(category, message):
     timestamp = time.strftime("%H:%M:%S")
-    log_entry = f"[{timestamp}] {message}"
+    log_entry = f"[{timestamp}] {category.upper()}: {message}"
     if category == "sensors":
         SENSOR_LOGS.append(log_entry)
         if len(SENSOR_LOGS) > 100: SENSOR_LOGS.pop(0)
@@ -97,9 +91,11 @@ def log_debug(category, message):
     else:
         GENERAL_LOGS.append(log_entry)
         if len(GENERAL_LOGS) > 100: GENERAL_LOGS.pop(0)
+    log.debug(log_entry)
 
 def find_serial_port():
     ports = serial.tools.list_ports.comports()
+    log_debug("general", f"Porturi disponibile: {[port.device for port in ports]}")
     for port in ports:
         if "USB" in port.device or "ACM" in port.device:
             log_debug("sensors", f"Port serial gasit: {port.device}")
@@ -111,60 +107,35 @@ def calculate_speaker_position():
     global SPEAKER_POSITION
     with SPEAKER_POSITION_LOCK:
         distances = sensor_data["distances"]
-        x = distances[1] if distances[1] != -1.0 else ROOM_WIDTH - distances[0]
-        y = distances[2] if distances[2] != -1.0 else ROOM_HEIGHT - distances[3]
-        x = max(0, min(ROOM_WIDTH, x))
-        y = max(0, min(ROOM_HEIGHT, y))
-        SPEAKER_POSITION = [x, y]
+        if any(d != -1.0 for d in distances):
+            x = distances[1] if distances[1] != -1.0 else ROOM_WIDTH - distances[0]
+            y = distances[2] if distances[2] != -1.0 else ROOM_HEIGHT - distances[3]
+            x = max(0, min(ROOM_WIDTH, x))
+            y = max(0, min(ROOM_HEIGHT, y))
+            SPEAKER_POSITION = [x, y]
     log_debug("people", f"Pozitia difuzorului: x={x:.1f} cm, y={y:.1f} cm, distances={distances}")
 
-def establish_baseline():
-    global sensor_baselines, baseline_established
-    log_debug("general", "Incep stabilirea baseline-ului...")
-    start_time = time.time()
-    timeout = 10
-    while time.time() - start_time < timeout:
-        for i in range(4):
-            history = list(sensor_history[i])
-            if len(history) < HISTORY_LENGTH:
-                continue
-            values = np.array(history[-HISTORY_LENGTH:])
-            if np.all(np.abs(values - values[0]) <= TOLERANCE):
-                sensor_baselines[i] = values[0]
-                log_debug("general", f"Baseline stabilit pentru senzor {i}: {sensor_baselines[i]} cm")
-        if all(baseline != MAX_DISTANCE for baseline in sensor_baselines):
-            break
-        time.sleep(0.2)
-    for i, baseline in enumerate(sensor_baselines):
-        if baseline == MAX_DISTANCE:
-            log_debug("general", f"Timeout: folosesc valoarea maxima ca baseline pentru senzor {i}: {MAX_DISTANCE} cm")
-            sensor_baselines[i] = MAX_DISTANCE
-    baseline_established = True
-    log_debug("general", "Stabilirea baseline-ului s-a incheiat.")
-
 def detect_people():
-    global people_positions, sensor_baselines
+    global people_positions
     people_positions.clear()
 
     distances = sensor_data["distances"]
+    positions = sensor_data["positions"]
+
     for i in range(4):
         sensor_history[i].append(distances[i] if distances[i] != -1.0 else MAX_DISTANCE)
 
-    calculate_speaker_position()
-
-    if not baseline_established:
-        return
-
-    for i in range(4):
-        history = list(sensor_history[i])
-        if len(history) < HISTORY_LENGTH:
-            continue
-        values = np.array(history[-HISTORY_LENGTH:])
-        current_distance = values[-1]
-        baseline = sensor_baselines[i]
-        if len(values) >= 2 and current_distance > 0:
-            diff = baseline - current_distance
-            if diff > MIN_CHANGE and np.all(np.abs(values[-2:] - current_distance) <= TOLERANCE):
+    if positions and len(positions) >= 2:
+        for i in range(0, len(positions), 2):
+            if i + 1 < len(positions):
+                x, y = positions[i], positions[i + 1]
+                people_positions.append([max(0, min(ROOM_WIDTH, x)), max(0, min(ROOM_HEIGHT, y))])
+        log_debug("people", f"Persoane detectate din ESP32: {len(people_positions)}")
+    else:
+        log_debug("people", "Nicio pozitie primita de la ESP32, folosesc distanÈ›e brute")
+        for i in range(4):
+            current_distance = distances[i]
+            if current_distance > 0 and current_distance < MAX_DISTANCE:
                 if i == 0: people_positions.append([ROOM_WIDTH - current_distance, ROOM_HEIGHT / 2])
                 elif i == 1: people_positions.append([current_distance, ROOM_HEIGHT / 2])
                 elif i == 2: people_positions.append([ROOM_WIDTH / 2, current_distance])
@@ -173,7 +144,7 @@ def detect_people():
     if people_positions:
         avg_x = np.mean([pos[0] for pos in people_positions])
         avg_y = np.mean([pos[1] for pos in people_positions])
-        log_debug("people", f"Persoana detectata, pozitie: ({avg_x:.1f}, {avg_y:.1f}) cm")
+        log_debug("people", f"Persoana detectata, pozitie medie: ({avg_x:.1f}, {avg_y:.1f}) cm")
 
 def adjust_time_alignment():
     global params
@@ -230,31 +201,18 @@ def read_serial():
                         continue
                     try:
                         data_dict = json.loads(json_str)
-                        if "c" in data_dict and "p" in data_dict and "d" in data_dict and "v" in data_dict and "f" in data_dict and "t" in data_dict:
-                            sensor_data["distances"] = [float(d) if d != 'eroare' else -1.0 for d in data_dict["d"]]
-                            sensor_data["positions"] = [float(x) for x in data_dict["p"]] if data_dict["p"] else []
-                            sensor_data["velocities"] = [float(v) for v in data_dict["v"]] if data_dict["v"] else []
-                            sensor_data["confidence"] = [float(c) for c in data_dict["f"]] if data_dict["f"] else []
-                            sensor_data["timestamp"] = data_dict["t"]
-                            log_debug("sensors", f"Date senzor: distances={sensor_data['distances']}, positions={sensor_data['positions']}, velocities={sensor_data['velocities']}, confidence={sensor_data['confidence']}, timestamp={sensor_data['timestamp']}")
-                            detect_people()
-                            adjust_time_alignment()
-                            socketio.emit('sensors', {
-                                'distances': sensor_data['distances'],
-                                'positions': sensor_data['positions'],
-                                'velocities': sensor_data['velocities'],
-                                'confidence': sensor_data['confidence'],
-                                'timestamp': sensor_data['timestamp']
-                            })
-                            people_data = {
-                                "count": data_dict["c"],
-                                "positions": [{"x": pos[0], "y": pos[1]} for pos in [sensor_data['positions'][:2]] if sensor_data['positions']]
-                            }
-                            socketio.emit('people', people_data)
-                        else:
-                            log_debug("sensors", f"JSON lipsesc chei necesare: {json_str}")
+                        sensor_data["distances"] = [float(d) if d != 'eroare' else -1.0 for d in data_dict.get("d", [-1.0] * 4)]
+                        sensor_data["positions"] = [float(x) for pair in zip(data_dict.get("p", [])[::2], data_dict.get("p", [])[1::2]) for x in pair] if data_dict.get("p") else []
+                        sensor_data["velocities"] = [float(v) for pair in zip(data_dict.get("v", [])[::2], data_dict.get("v", [])[1::2]) for v in pair] if data_dict.get("v") else []
+                        sensor_data["confidence"] = data_dict.get("f", [0.0])
+                        sensor_data["timestamp"] = data_dict.get("t", 0)
+                        log_debug("sensors", f"Date senzor primite: {sensor_data}")
+                        detect_people()
+                        adjust_time_alignment()
                     except json.JSONDecodeError as e:
                         log_debug("sensors", f"Eroare JSON: {e}, linie: {json_str}")
+                    except Exception as e:
+                        log_debug("sensors", f"Eroare neasteptata la parsare JSON: {e}, linie: {json_str}")
                     buffer = buffer[end:].strip()
             else:
                 if ser.in_waiting == 0 and buffer and '{' not in buffer:
@@ -270,6 +228,7 @@ def read_serial():
             continue
         time.sleep(0.01)
 
+# FuncÈ›ii audio (neschimbate)
 def find_audio_devices(p):
     loopback_idx = None
     output_idx = None
@@ -302,30 +261,22 @@ class AudioProcessor:
         self.stream_in = None
         self.stream_out = None
         self.initialize_streams()
-        max_delay = 2205  # 50 ms * 44.1 kHz
+        max_delay = 2205
         self.delay_buffer = np.zeros((2, max_delay + CHUNK))
         self.delay_index = 0
 
     def initialize_streams(self):
         try:
             if self.stream_in:
-                try:
-                    if self.stream_in.is_active():
-                        self.stream_in.stop_stream()
-                    self.stream_in.close()
-                except:
-                    pass
+                if self.stream_in.is_active():
+                    self.stream_in.stop_stream()
+                self.stream_in.close()
                 self.stream_in = None
-
             if self.stream_out:
-                try:
-                    if self.stream_out.is_active():
-                        self.stream_out.stop_stream()
-                    self.stream_out.close()
-                except:
-                    pass
+                if self.stream_out.is_active():
+                    self.stream_out.stop_stream()
+                self.stream_out.close()
                 self.stream_out = None
-
             self.stream_in = self.p.open(
                 format=FORMAT,
                 channels=CHANNELS,
@@ -402,13 +353,11 @@ class AudioProcessor:
     def cleanup(self):
         log_debug("audio", "Incep cleanup AudioProcessor...")
         self.running = False
-
         if self.audio_thread and self.audio_thread.is_alive():
             log_debug("audio", "Astept oprirea thread-ului audio...")
             self.audio_thread.join(timeout=2.0)
             if self.audio_thread.is_alive():
                 log_debug("audio", "Thread-ul audio nu s-a oprit in timp util")
-
         try:
             if hasattr(self, 'stream_in') and self.stream_in:
                 if self.stream_in.is_active():
@@ -418,7 +367,6 @@ class AudioProcessor:
                 log_debug("audio", "Stream input inchis")
         except Exception as e:
             log_debug("audio", f"Eroare la inchiderea stream_in: {e}")
-
         try:
             if hasattr(self, 'stream_out') and self.stream_out:
                 if self.stream_out.is_active():
@@ -428,7 +376,6 @@ class AudioProcessor:
                 log_debug("audio", "Stream output inchis")
         except Exception as e:
             log_debug("audio", f"Eroare la inchiderea stream_out: {e}")
-
         time.sleep(0.1)
         log_debug("audio", "Cleanup AudioProcessor complet")
 
@@ -447,63 +394,29 @@ class AudioProcessor:
                 self.audio_thread.join(timeout=2.0)
 
     def run(self):
-        global SHOULD_RUN, AUDIO_BUFFER_IN, AUDIO_BUFFER_OUT, LAST_AUDIO_UPDATE
+        global SHOULD_RUN, LAST_AUDIO_UPDATE
         log_debug("audio", f"Rutare sunet de la hw:{LOOPBACK_DEVICE_INDEX} la hw:{IQAUDIO_DEVICE_INDEX}")
-
         while self.running and SHOULD_RUN:
             try:
                 if not self.stream_in or not self.stream_in.is_active():
                     log_debug("audio", "Stream input inactiv, reinitializez")
                     self.initialize_streams()
                     continue
-
                 data_in = self.stream_in.read(CHUNK, exception_on_overflow=False)
-
                 if not self.running or not SHOULD_RUN:
                     break
-
                 data_out = self.process_binaural_audio(data_in)
-
                 if not self.stream_out or not self.stream_out.is_active():
                     log_debug("audio", "Stream output inactiv, reinitializez")
                     self.initialize_streams()
                     continue
-
                 self.stream_out.write(data_out)
-
-                audio_array_in = np.frombuffer(data_in, dtype=np.int16)
-                audio_array_out = np.frombuffer(data_out, dtype=np.int16)
-
-                socketio.emit('data_input', {
-                    'input': audio_array_in.tolist(),
-                    'max_amplitude': int(np.max(np.abs(audio_array_in)))
-                })
-                socketio.emit('data_output', {
-                    'output': audio_array_out.tolist(),
-                    'max_amplitude': int(np.max(np.abs(audio_array_out))),
-                    'anomalies': []
-                })
-
-                AUDIO_BUFFER_IN.append(list(audio_array_in[::2]))
-                AUDIO_BUFFER_OUT.append(list(audio_array_out[::2]))
-
-                current_time = time.time()
-                if current_time - LAST_AUDIO_UPDATE >= 0.2:
-                    if not self.running or not SHOULD_RUN:
-                        break
-
-                    socketio.emit('data_input', {
-                        'input': [item for sublist in AUDIO_BUFFER_IN for item in sublist],
-                        'max_amplitude': int(np.max([abs(x) for sublist in AUDIO_BUFFER_IN for x in sublist]))
-                    })
-                    socketio.emit('data_output', {
-                        'output': [item for sublist in AUDIO_BUFFER_OUT for item in sublist],
-                        'max_amplitude': int(np.max([abs(x) for sublist in AUDIO_BUFFER_OUT for x in sublist]))
-                    })
-                    LAST_AUDIO_UPDATE = current_time
-                    AUDIO_BUFFER_IN.clear()
-                    AUDIO_BUFFER_OUT.clear()
-
+                if time.time() - LAST_AUDIO_UPDATE >= 0.1:
+                    audio_array_in = np.frombuffer(data_in, dtype=np.int16)
+                    audio_array_out = np.frombuffer(data_out, dtype=np.int16)
+                    socketio.emit('data_input', {'input': audio_array_in.tolist(), 'max_amplitude': int(np.max(np.abs(audio_array_in)))})
+                    socketio.emit('data_output', {'output': audio_array_out.tolist(), 'max_amplitude': int(np.max(np.abs(audio_array_out))), 'anomalies': []})
+                    LAST_AUDIO_UPDATE = time.time()
             except OSError as e:
                 if self.running and SHOULD_RUN:
                     log_debug("audio", f"Eroare la citire: {e}, reinitializez")
@@ -517,7 +430,6 @@ class AudioProcessor:
                 if self.running and SHOULD_RUN:
                     log_debug("audio", f"Eroare neasteptata: {e}")
                 continue
-
         log_debug("audio", "Thread audio oprit complet.")
 
 def start_processing():
@@ -532,7 +444,6 @@ def start_processing():
             except Exception as e:
                 log_debug("general", f"Eroare la cleanup: {e}")
             processor = None
-
         if p_proc:
             try:
                 p_proc.terminate()
@@ -540,9 +451,7 @@ def start_processing():
             except Exception as e:
                 log_debug("general", f"Eroare la terminarea PyAudio: {e}")
             p_proc = None
-
         time.sleep(0.5)
-
         try:
             p_proc = pyaudio.PyAudio()
             processor = AudioProcessor(p_proc)
@@ -567,7 +476,7 @@ def websocket_data_thread():
             socketio.sleep(0.1)
             continue
         current_time = time.time()
-        if current_time - LAST_SENSOR_UPDATE >= 0.2:
+        if current_time - LAST_SENSOR_UPDATE >= 0.1:
             if sensor_data and any(isinstance(v, (int, float)) and v != -1.0 for v in sensor_data["distances"]):
                 socketio.emit('sensors', sensor_data)
             socketio.emit('people', {
@@ -627,10 +536,8 @@ def watchdog():
 def cleanup():
     global processor, ser, p_proc, SHOULD_RUN
     log_debug("general", "Incep cleanup global...")
-
     with PROCESSOR_LOCK:
         SHOULD_RUN = False
-
     if processor:
         try:
             processor.stop()
@@ -638,7 +545,6 @@ def cleanup():
         except Exception as e:
             log_debug("general", f"Eroare la cleanup procesor: {e}")
         processor = None
-
     if p_proc:
         try:
             p_proc.terminate()
@@ -646,7 +552,6 @@ def cleanup():
         except Exception as e:
             log_debug("general", f"Eroare la terminarea p_proc: {e}")
         p_proc = None
-
     try:
         if ser and ser.is_open:
             ser.close()
@@ -660,15 +565,12 @@ atexit.register(cleanup)
 def toggle_processing():
     global SHOULD_RUN, processor, p_proc
     log_debug("general", f"Inainte de toggle: running = {params['running']}")
-
     try:
         if params['running']:
             log_debug("general", "Oprim procesarea...")
             params['running'] = False
-
             with PROCESSOR_LOCK:
                 SHOULD_RUN = False
-
                 if processor is not None:
                     try:
                         processor.stop()
@@ -677,7 +579,6 @@ def toggle_processing():
                     except Exception as e:
                         log_debug("general", f"Eroare la oprirea procesorului: {e}")
                     processor = None
-
                 if p_proc:
                     try:
                         p_proc.terminate()
@@ -685,15 +586,12 @@ def toggle_processing():
                     except Exception as e:
                         log_debug("general", f"Eroare la terminarea p_proc: {e}")
                     p_proc = None
-
             time.sleep(1.0)
             log_debug("general", "Procesare oprit complet")
-
         else:
             log_debug("general", "Pornesc procesarea...")
             params['running'] = True
             start_processing()
-
         log_debug("general", f"Dupa toggle: running = {params['running']}")
         return jsonify({'status': 'success', 'running': params['running']})
     except Exception as e:
@@ -733,16 +631,14 @@ def handle_disconnect():
     log_debug("general", "Client deconectat!")
 
 if __name__ == '__main__':
+    log_debug("general", "Pornirea aplicatiei...")
     try:
         serial_thread = threading.Thread(target=read_serial, daemon=True)
         serial_thread.start()
-        baseline_thread = threading.Thread(target=establish_baseline, daemon=True)
-        baseline_thread.start()
         watchdog_thread = threading.Thread(target=watchdog, daemon=True)
         watchdog_thread.start()
         socketio.start_background_task(websocket_data_thread)
-
-        log_debug("general", "Pornirea aplicatiei pe http://0.0.0.0:5500")
+        log_debug("general", "Pornirea serverului Flask pe http://0.0.0.0:5500")
         socketio.run(app, host='0.0.0.0', port=5500, debug=True)
     except KeyboardInterrupt:
         log_debug("general", "Oprire prin Ctrl+C...")
@@ -753,3 +649,4 @@ if __name__ == '__main__':
     except Exception as e:
         log_debug("general", f"Eroare la pornirea aplicatiei: {e}")
         cleanup()
+        sys.exit(1)
