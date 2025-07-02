@@ -317,7 +317,7 @@ const calculateAngles = () => {
   isDataReady.value = true;
 };
 
-const socket = io('http://192.168.3.28:5500');
+const socket = io('http://192.168.100.100:5500');
 
 onMounted(() => {
   socket.on('connect', () => console.log('Conectat la server WebSocket'));
@@ -365,9 +365,9 @@ onMounted(() => {
   const fetchLogs = async () => {
     try {
       const [generalRes, sensorsRes, peopleRes] = await Promise.all([
-        axios.get('http://192.168.3.28:5500/logs/general'),
-        axios.get('http://192.168.3.28:5500/logs/sensors'),
-        axios.get('http://192.168.3.28:5500/logs/people'),
+        axios.get('http://192.168.100.100:5500/logs/general'),
+        axios.get('http://192.168.100.100:5500/logs/sensors'),
+        axios.get('http://192.168.100.100:5500/logs/people'),
       ]);
       logsGeneral.value = generalRes.data.logs.reverse().slice(0, 200) || [];
       logsSensors.value = sensorsRes.data.logs.reverse().slice(0, 200) || [];
@@ -413,7 +413,7 @@ onUnmounted(() => {
 
 const toggleProcessing = async () => {
   try {
-    const res = await axios.post('http://192.168.3.28:5500/toggle');
+    const res = await axios.post('http://192.168.100.100:5500/toggle');
     store.commit('setRunning', res.data.running);
     toast.success(res.data.running ? 'Procesare pornita' : 'Procesare oprita');
   } catch (error) {
